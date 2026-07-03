@@ -1,22 +1,27 @@
 const multer = require("multer");
-const { CloudinaryStorage } = require("multer-storage-cloudinary");
-const cloudinary = require("../config/cloudinary");
+const path = require("path");
+const fs = require("fs");
 
-// Configure Cloudinary storage
-const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: {
-    folder: "products",
-    allowed_formats: ["jpg", "jpeg", "png", "webp", "gif"],
-    transformation: [{ width: 800, height: 800, crop: "limit" }],
-    public_id: (req, file) => {
-      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-      return `product-${uniqueSuffix}`;
-    },
+// Ensure uploads directory exists
+const uploadDir = path.join(__dirname, "../../public/uploads/products");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+// Configure multer storage
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    // Clean filename
+    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(null, "product-" + uniqueSuffix + path.extname(cleanName));
   },
 });
 
-// File filter
+// File filter - only images
 const fileFilter = (req, file, cb) => {
   const allowedTypes = [
     "image/jpeg",
@@ -45,10 +50,34 @@ const upload = multer({
   fileFilter: fileFilter,
 });
 
-// Single image upload
-const uploadSingle = upload.single("image");
+// Error handling middleware for multer
+const handleMulterError = (err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === "FILE_TOO_LARGE") {
+      return res.status(400).json({
+        success: false,
+        message: "File too large. Maximum size is 5MB",
+      });
+    }
+    return res.status(400).json({
+      success: false,
+      message: err.message,
+    });
+  }
+  next(err);
+};
 
 // Multiple images upload (max 5)
-const uploadMultiple = upload.array("images", 5);
+const uploadMultiple = (req, res, next) => {
+  upload.array("images", 5)(req, res, (err) => {
+    if (err) {
+      return handleMulterError(err, req, res, next);
+    }
+    next();
+  });
+};
+
+// Single image upload
+const uploadSingle = upload.single("image");
 
 module.exports = { upload, uploadSingle, uploadMultiple };
