@@ -9,7 +9,6 @@ const getProducts = async (req, res) => {
     
     const query = { isActive: true };
     
-    // Filter by category
     if (category) {
       const categoryDoc = await Category.findOne({ slug: category });
       if (categoryDoc) {
@@ -17,14 +16,12 @@ const getProducts = async (req, res) => {
       }
     }
     
-    // Filter by price range
     if (minPrice || maxPrice) {
       query.price = {};
       if (minPrice) query.price.$gte = parseFloat(minPrice);
       if (maxPrice) query.price.$lte = parseFloat(maxPrice);
     }
     
-    // Search by name or description
     if (search) {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
@@ -32,14 +29,12 @@ const getProducts = async (req, res) => {
       ];
     }
     
-    // Sorting
     let sortOption = {};
     if (sort === 'price_asc') sortOption.price = 1;
     else if (sort === 'price_desc') sortOption.price = -1;
     else if (sort === 'newest') sortOption.createdAt = -1;
     else sortOption.name = 1;
     
-    // Pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
     
     const products = await Product.find(query)
@@ -109,7 +104,6 @@ const createProduct = async (req, res) => {
       isFeatured 
     } = req.body;
 
-    // Validate required fields
     if (!name || !description || !price || !category) {
       return res.status(400).json({
         success: false,
@@ -117,7 +111,6 @@ const createProduct = async (req, res) => {
       });
     }
 
-    // Check if category exists
     const categoryExists = await Category.findById(category);
     if (!categoryExists) {
       return res.status(400).json({
@@ -126,10 +119,7 @@ const createProduct = async (req, res) => {
       });
     }
 
-    // Generate slug
     const slug = slugify(name);
-
-    // Check if product exists
     const exists = await Product.findOne({ slug });
     if (exists) {
       return res.status(400).json({
@@ -138,17 +128,29 @@ const createProduct = async (req, res) => {
       });
     }
 
-    const product = await Product.create({
+    // Clean variants - remove empty values and ensure proper structure
+    const cleanedVariants = variants && variants.length > 0 
+      ? variants.map(v => ({
+          size: v.size || '',
+          color: v.color || '',
+          stock: parseInt(v.stock) || 0,
+          price: parseFloat(v.price) || 0
+        })).filter(v => v.color || v.size) // Keep only if has color or size
+      : [];
+
+    const productData = {
       name,
       slug,
       description,
-      price,
+      price: parseFloat(price),
       category,
       images: images || [],
-      variants: variants || [],
-      stock: stock || 0,
+      variants: cleanedVariants,
+      stock: cleanedVariants.length > 0 ? 0 : parseInt(stock) || 0,
       isFeatured: isFeatured || false
-    });
+    };
+
+    const product = await Product.create(productData);
 
     res.status(201).json({
       success: true,
@@ -158,7 +160,7 @@ const createProduct = async (req, res) => {
     console.error('Create product error:', error);
     res.status(500).json({
       success: false,
-      message: 'Server error'
+      message: error.message || 'Server error'
     });
   }
 };
@@ -187,13 +189,12 @@ const updateProduct = async (req, res) => {
       isFeatured 
     } = req.body;
 
-    // Update fields
     if (name) {
       product.name = name;
       product.slug = slugify(name);
     }
     if (description) product.description = description;
-    if (price) product.price = price;
+    if (price) product.price = parseFloat(price);
     if (category) {
       const categoryExists = await Category.findById(category);
       if (!categoryExists) {
@@ -205,8 +206,22 @@ const updateProduct = async (req, res) => {
       product.category = category;
     }
     if (images) product.images = images;
-    if (variants) product.variants = variants;
-    if (stock !== undefined) product.stock = stock;
+    
+    if (variants) {
+      const cleanedVariants = variants.map(v => ({
+        size: v.size || '',
+        color: v.color || '',
+        stock: parseInt(v.stock) || 0,
+        price: parseFloat(v.price) || 0
+      })).filter(v => v.color || v.size);
+      product.variants = cleanedVariants;
+      product.stock = cleanedVariants.length > 0 ? 0 : parseInt(stock) || 0;
+    }
+    
+    if (stock !== undefined && (!product.variants || product.variants.length === 0)) {
+      product.stock = parseInt(stock) || 0;
+    }
+    
     if (isActive !== undefined) product.isActive = isActive;
     if (isFeatured !== undefined) product.isFeatured = isFeatured;
 
@@ -220,7 +235,7 @@ const updateProduct = async (req, res) => {
     console.error('Update product error:', error);
     res.status(500).json({
       success: false,
-      message: 'Server error'
+      message: error.message || 'Server error'
     });
   }
 };

@@ -30,24 +30,27 @@ const productSchema = new mongoose.Schema({
   images: [{
     type: String
   }],
-  // Variants for sizes/colors (optional)
   variants: [{
     size: {
       type: String,
-      enum: ['XS', 'S', 'M', 'L', 'XL', 'XXL']
+      enum: ['XS', 'S', 'M', 'L', 'XL', 'XXL', ''],
+      default: ''
     },
-    color: String,
+    color: {
+      type: String,
+      default: ''
+    },
     stock: {
       type: Number,
       default: 0,
       min: 0
     },
-    priceAdjustment: {
+    price: {
       type: Number,
-      default: 0
+      default: 0,
+      min: 0
     }
   }],
-  // Simple stock (if no variants)
   stock: {
     type: Number,
     default: 0,
@@ -63,6 +66,14 @@ const productSchema = new mongoose.Schema({
   }
 }, {
   timestamps: true
+});
+
+// Add virtual for total stock
+productSchema.virtual('totalStock').get(function() {
+  if (this.variants && this.variants.length > 0) {
+    return this.variants.reduce((sum, v) => sum + (v.stock || 0), 0);
+  }
+  return this.stock || 0;
 });
 
 module.exports = mongoose.model('Product', productSchema);
