@@ -2,7 +2,7 @@
 const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-// const { sendEmail } = require('../services/emailService');
+const { sendEmail } = require("../services/emailService");
 
 // Generate JWT Token
 const generateToken = (id) => {
@@ -187,13 +187,18 @@ exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
 
+    console.log("📧 Forgot password request for:", email);
+
     const user = await User.findOne({ email });
     if (!user) {
+      console.log("❌ User not found:", email);
       return res.status(404).json({
         success: false,
         message: "No user found with this email",
       });
     }
+
+    console.log("✅ User found:", user.email);
 
     // Generate reset token
     const resetToken = crypto.randomBytes(32).toString("hex");
@@ -206,25 +211,77 @@ exports.forgotPassword = async (req, res) => {
     user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
 
     await user.save();
+    console.log("✅ Reset token saved for user:", user.email);
 
-    // Create reset URL (frontend URL)
+    // Create reset URL
     const resetUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/reset-password/${resetToken}`;
+    console.log("🔑 Reset URL:", resetUrl);
 
-    console.log("📧 Password reset link:", resetUrl);
-    console.log("🔑 Reset token:", resetToken);
+    // Send email
+    console.log("📧 Attempting to send email...");
+    const emailResult = await sendEmail({
+      to: user.email,
+      subject: "Password Reset Request - IntimaCare",
+      html: `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; background: #F7F3EA; padding: 40px 20px; }
+              .container { max-width: 500px; margin: 0 auto; background: white; padding: 40px; border: 1px solid #E6DFD1; }
+              .header { text-align: center; border-bottom: 1px solid #E6DFD1; padding-bottom: 20px; margin-bottom: 30px; }
+              .logo { font-family: Georgia, serif; font-size: 24px; color: #14120F; }
+              .button { display: inline-block; background: #14120F; color: #F7F3EA; padding: 12px 40px; text-decoration: none; letter-spacing: 0.15em; text-transform: uppercase; font-size: 12px; border: none; cursor: pointer; }
+              .button:hover { background: #1F3D33; }
+              .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #E6DFD1; text-align: center; font-size: 12px; color: #8C7B6B; }
+              .expiry { background: #FBF9F4; padding: 15px; font-size: 13px; color: #5C5348; margin: 20px 0; border-left: 3px solid #B08D4F; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <div class="header">
+                <div class="logo">IntimaCare</div>
+              </div>
+              
+              <h2 style="font-family: Georgia, serif; font-weight: 300; color: #14120F; margin-bottom: 10px;">Reset Your Password</h2>
+              <p style="color: #5C5348; line-height: 1.6; margin-bottom: 25px;">
+                We received a request to reset the password for your IntimaCare account. Click the button below to create a new password.
+              </p>
+              
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${resetUrl}" class="button">Reset Password</a>
+              </div>
+              
+              <div class="expiry">
+                ⏰ This link will expire in <strong>1 hour</strong>.
+              </div>
+              
+              <p style="color: #5C5348; font-size: 14px; margin-top: 20px;">
+                If you didn't request this, please ignore this email or contact support.
+              </p>
+              
+              <div class="footer">
+                <p>© ${new Date().getFullYear()} IntimaCare. All rights reserved.</p>
+              </div>
+            </div>
+          </body>
+        </html>
+      `,
+    });
 
-    // For development, just return the reset URL
-    // In production, you would send an email
+    console.log("📧 Email result:", emailResult);
+
     res.json({
       success: true,
-      message: "Password reset link generated",
+      message: "Password reset link sent to your email",
       resetUrl: process.env.NODE_ENV === "development" ? resetUrl : undefined,
     });
   } catch (error) {
-    console.error("Forgot password error:", error);
+    console.error("❌ Forgot password error:", error);
+    console.error("❌ Error stack:", error.stack);
     res.status(500).json({
       success: false,
-      message: "Error generating reset link",
+      message: `Error sending reset email: ${error.message}`,
     });
   }
 };
