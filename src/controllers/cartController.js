@@ -34,7 +34,7 @@ exports.addToCart = async (req, res) => {
   try {
     const { productId, quantity, selectedVariant } = req.body;
 
-    // Validate product exists
+    // ✅ Validate product exists
     const product = await Product.findById(productId);
     if (!product) {
       return res.status(404).json({
@@ -43,41 +43,43 @@ exports.addToCart = async (req, res) => {
       });
     }
 
-    // Validate stock
+    // ✅ Validate stock BEFORE adding to cart
     if (selectedVariant && selectedVariant.size) {
       const variant = product.variants.find(
         (v) =>
           v.size === selectedVariant.size && v.color === selectedVariant.color,
       );
-      if (!variant || variant.stock < quantity) {
+
+      if (!variant) {
         return res.status(400).json({
           success: false,
-          message: "Insufficient stock for selected variant",
+          message: `Variant ${selectedVariant.color} ${selectedVariant.size} not found for this product`,
         });
       }
-    } else if (product.stock < quantity) {
-      return res.status(400).json({
-        success: false,
-        message: "Insufficient stock",
-      });
+
+      // ✅ Check variant stock
+      if (variant.stock < quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock for ${product.name} - ${selectedVariant.color} ${selectedVariant.size}. Available: ${variant.stock}`,
+        });
+      }
+    } else {
+      // ✅ Check product stock (no variant)
+      if (product.stock < quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient stock for ${product.name}. Available: ${product.stock}`,
+        });
+      }
     }
 
+    // ✅ Fetch or create cart
     let cart = await Cart.findOne({ user: req.user.id });
 
     if (!cart) {
       cart = new Cart({ user: req.user.id, items: [] });
     }
-
-    // Check if product with same variant already in cart
-    const itemIndex = cart.items.findIndex((item) => {
-      const sameProduct = item.product.toString() === productId;
-      const sameVariant =
-        selectedVariant && selectedVariant.size
-          ? item.selectedVariant?.size === selectedVariant.size &&
-            item.selectedVariant?.color === selectedVariant.color
-          : !item.selectedVariant?.size;
-      return sameProduct && sameVariant;
-    });
 
     // Calculate price adjustment from variant
     let priceAdjustment = 0;
@@ -91,9 +93,44 @@ exports.addToCart = async (req, res) => {
       }
     }
 
+    // Check if item already exists in cart
+    const itemIndex = cart.items.findIndex((item) => {
+      const sameProduct = item.product.toString() === productId;
+      const sameVariant =
+        selectedVariant && selectedVariant.size
+          ? item.selectedVariant?.size === selectedVariant.size &&
+            item.selectedVariant?.color === selectedVariant.color
+          : !item.selectedVariant?.size;
+      return sameProduct && sameVariant;
+    });
+
     if (itemIndex > -1) {
+      // ✅ Check if total cumulative quantity would exceed stock
+      const newQuantity = cart.items[itemIndex].quantity + quantity;
+
+      if (selectedVariant && selectedVariant.size) {
+        const variant = product.variants.find(
+          (v) =>
+            v.size === selectedVariant.size &&
+            v.color === selectedVariant.color,
+        );
+        if (variant && variant.stock < newQuantity) {
+          return res.status(400).json({
+            success: false,
+            message: `Cannot add more. Only ${variant.stock} available in stock. You already have ${cart.items[itemIndex].quantity} in cart.`,
+          });
+        }
+      } else {
+        if (product.stock < newQuantity) {
+          return res.status(400).json({
+            success: false,
+            message: `Cannot add more. Only ${product.stock} available in stock. You already have ${cart.items[itemIndex].quantity} in cart.`,
+          });
+        }
+      }
+
       // Update quantity
-      cart.items[itemIndex].quantity += quantity;
+      cart.items[itemIndex].quantity = newQuantity;
     } else {
       // Add new item
       cart.items.push({
@@ -131,6 +168,15 @@ exports.updateCartItem = async (req, res) => {
     const { productId } = req.params;
     const { quantity, selectedVariant } = req.body;
 
+    // ✅ Validate product exists
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+
     const cart = await Cart.findOne({ user: req.user.id });
 
     if (!cart) {
@@ -156,6 +202,30 @@ exports.updateCartItem = async (req, res) => {
         success: false,
         message: "Item not found in cart",
       });
+    }
+
+    // ✅ Check stock before updating quantity
+    if (quantity > 0) {
+      if (selectedVariant && selectedVariant.size) {
+        const variant = product.variants.find(
+          (v) =>
+            v.size === selectedVariant.size &&
+            v.color === selectedVariant.color,
+        );
+        if (variant && variant.stock < quantity) {
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient stock. Only ${variant.stock} available.`,
+          });
+        }
+      } else {
+        if (product.stock < quantity) {
+          return res.status(400).json({
+            success: false,
+            message: `Insufficient stock. Only ${product.stock} available.`,
+          });
+        }
+      }
     }
 
     if (quantity <= 0) {
@@ -198,9 +268,7 @@ exports.removeFromCart = async (req, res) => {
       });
     }
 
-    // ✅ FIXED: Correct filter logic - keep items that DON'T match
-    // If selectedVariant is provided, match both product and variant
-    // If no variant, just match product
+    // ✅ Keep items that DON'T match criteria
     if (selectedVariant && selectedVariant.size) {
       // Remove specific variant
       cart.items = cart.items.filter((item) => {
@@ -208,7 +276,6 @@ exports.removeFromCart = async (req, res) => {
         const sameVariant =
           item.selectedVariant?.size === selectedVariant.size &&
           item.selectedVariant?.color === selectedVariant.color;
-        // Keep if NOT (same product AND same variant)
         return !(sameProduct && sameVariant);
       });
     } else {
