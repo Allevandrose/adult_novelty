@@ -14,6 +14,8 @@ const productRoutes = require("./routes/productRoutes");
 const orderRoutes = require("./routes/orderRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const cartRoutes = require("./routes/cartRoutes");
+// 🛠️ ADDED: Admin routes import
+const adminRoutes = require("./routes/adminRoutes");
 
 const app = express();
 
@@ -53,7 +55,6 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // Serve static files (for uploaded images)
-// FIX: Added 'Cross-Origin-Resource-Policy: cross-origin' to bypass Helmet's default same-origin restriction for images
 app.use(
   "/uploads",
   express.static(path.join(__dirname, "../public/uploads"), {
@@ -87,6 +88,8 @@ app.use("/api/products", productRoutes);
 app.use("/api/orders", orderRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/cart", cartRoutes);
+// 🛠️ ADDED: Admin routes registration
+app.use("/api/admin", adminRoutes);
 
 // 404 handler
 app.use((req, res) => {
