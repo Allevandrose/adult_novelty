@@ -1,4 +1,3 @@
-// src/models/Cart.js
 const mongoose = require("mongoose");
 
 const cartItemSchema = new mongoose.Schema({
@@ -12,6 +11,20 @@ const cartItemSchema = new mongoose.Schema({
     required: true,
     min: 1,
     default: 1,
+  },
+  selectedVariant: {
+    size: {
+      type: String,
+      default: "",
+    },
+    color: {
+      type: String,
+      default: "",
+    },
+    priceAdjustment: {
+      type: Number,
+      default: 0,
+    },
   },
 });
 

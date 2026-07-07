@@ -1,5 +1,5 @@
-// src/controllers/cartController.js
 const Cart = require("../models/Cart");
+const Product = require("../models/Product");
 
 // @desc    Get user cart
 // @route   GET /api/cart
@@ -32,7 +32,35 @@ exports.getCart = async (req, res) => {
 // @access  Private
 exports.addToCart = async (req, res) => {
   try {
-    const { productId, quantity } = req.body;
+    const { productId, quantity, selectedVariant } = req.body;
+
+    // Validate product exists
+    const product = await Product.findById(productId);
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+
+    // Validate stock
+    if (selectedVariant && selectedVariant.size) {
+      const variant = product.variants.find(
+        (v) =>
+          v.size === selectedVariant.size && v.color === selectedVariant.color,
+      );
+      if (!variant || variant.stock < quantity) {
+        return res.status(400).json({
+          success: false,
+          message: "Insufficient stock for selected variant",
+        });
+      }
+    } else if (product.stock < quantity) {
+      return res.status(400).json({
+        success: false,
+        message: "Insufficient stock",
+      });
+    }
 
     let cart = await Cart.findOne({ user: req.user.id });
 
@@ -40,17 +68,43 @@ exports.addToCart = async (req, res) => {
       cart = new Cart({ user: req.user.id, items: [] });
     }
 
-    // Check if product already in cart
-    const itemIndex = cart.items.findIndex(
-      (item) => item.product.toString() === productId,
-    );
+    // Check if product with same variant already in cart
+    const itemIndex = cart.items.findIndex((item) => {
+      const sameProduct = item.product.toString() === productId;
+      const sameVariant =
+        selectedVariant && selectedVariant.size
+          ? item.selectedVariant?.size === selectedVariant.size &&
+            item.selectedVariant?.color === selectedVariant.color
+          : !item.selectedVariant?.size;
+      return sameProduct && sameVariant;
+    });
+
+    // Calculate price adjustment from variant
+    let priceAdjustment = 0;
+    if (selectedVariant && selectedVariant.size) {
+      const variant = product.variants.find(
+        (v) =>
+          v.size === selectedVariant.size && v.color === selectedVariant.color,
+      );
+      if (variant && variant.price) {
+        priceAdjustment = variant.price;
+      }
+    }
 
     if (itemIndex > -1) {
       // Update quantity
       cart.items[itemIndex].quantity += quantity;
     } else {
       // Add new item
-      cart.items.push({ product: productId, quantity });
+      cart.items.push({
+        product: productId,
+        quantity,
+        selectedVariant: {
+          size: selectedVariant?.size || "",
+          color: selectedVariant?.color || "",
+          priceAdjustment,
+        },
+      });
     }
 
     await cart.save();
@@ -75,7 +129,7 @@ exports.addToCart = async (req, res) => {
 exports.updateCartItem = async (req, res) => {
   try {
     const { productId } = req.params;
-    const { quantity } = req.body;
+    const { quantity, selectedVariant } = req.body;
 
     const cart = await Cart.findOne({ user: req.user.id });
 
@@ -86,9 +140,16 @@ exports.updateCartItem = async (req, res) => {
       });
     }
 
-    const itemIndex = cart.items.findIndex(
-      (item) => item.product.toString() === productId,
-    );
+    // Find item with matching product and variant
+    const itemIndex = cart.items.findIndex((item) => {
+      const sameProduct = item.product.toString() === productId;
+      const sameVariant =
+        selectedVariant && selectedVariant.size
+          ? item.selectedVariant?.size === selectedVariant.size &&
+            item.selectedVariant?.color === selectedVariant.color
+          : !item.selectedVariant?.size;
+      return sameProduct && sameVariant;
+    });
 
     if (itemIndex === -1) {
       return res.status(404).json({
@@ -126,6 +187,7 @@ exports.updateCartItem = async (req, res) => {
 exports.removeFromCart = async (req, res) => {
   try {
     const { productId } = req.params;
+    const { selectedVariant } = req.body;
 
     const cart = await Cart.findOne({ user: req.user.id });
 
@@ -136,9 +198,25 @@ exports.removeFromCart = async (req, res) => {
       });
     }
 
-    cart.items = cart.items.filter(
-      (item) => item.product.toString() !== productId,
-    );
+    // ✅ FIXED: Correct filter logic - keep items that DON'T match
+    // If selectedVariant is provided, match both product and variant
+    // If no variant, just match product
+    if (selectedVariant && selectedVariant.size) {
+      // Remove specific variant
+      cart.items = cart.items.filter((item) => {
+        const sameProduct = item.product.toString() === productId;
+        const sameVariant =
+          item.selectedVariant?.size === selectedVariant.size &&
+          item.selectedVariant?.color === selectedVariant.color;
+        // Keep if NOT (same product AND same variant)
+        return !(sameProduct && sameVariant);
+      });
+    } else {
+      // Remove all instances of this product (no variant specified)
+      cart.items = cart.items.filter(
+        (item) => item.product.toString() !== productId,
+      );
+    }
 
     await cart.save();
     await cart.populate("items.product");
@@ -199,11 +277,17 @@ exports.syncCart = async (req, res) => {
       cart = new Cart({ user: req.user.id, items: [] });
     }
 
-    // Merge items
+    // Merge items with variant support
     for (const localItem of items) {
-      const existingIndex = cart.items.findIndex(
-        (item) => item.product.toString() === localItem.productId,
-      );
+      const existingIndex = cart.items.findIndex((item) => {
+        const sameProduct = item.product.toString() === localItem.productId;
+        const sameVariant =
+          localItem.selectedVariant && localItem.selectedVariant.size
+            ? item.selectedVariant?.size === localItem.selectedVariant.size &&
+              item.selectedVariant?.color === localItem.selectedVariant.color
+            : !item.selectedVariant?.size;
+        return sameProduct && sameVariant;
+      });
 
       if (existingIndex > -1) {
         // If product exists, add quantities
@@ -213,6 +297,7 @@ exports.syncCart = async (req, res) => {
         cart.items.push({
           product: localItem.productId,
           quantity: localItem.quantity,
+          selectedVariant: localItem.selectedVariant || {},
         });
       }
     }
