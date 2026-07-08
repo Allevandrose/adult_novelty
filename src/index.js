@@ -45,7 +45,7 @@ app.use(
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 1000, // Updated to 1000 as requested
   message: "Too many requests, please try again later",
 });
 app.use("/api", limiter);
@@ -91,7 +91,7 @@ app.use("/api/cart", cartRoutes);
 // 🛠️ ADDED: Admin routes registration
 app.use("/api/admin", adminRoutes);
 
-// Root route (Updated per your request)
+// Root route
 app.get("/", (req, res) => {
   res.json({
     success: true,
