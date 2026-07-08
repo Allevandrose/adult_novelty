@@ -1,17 +1,61 @@
-// src/routes/authRoutes.js
 const express = require("express");
 const router = express.Router();
 const auth = require("../middleware/auth");
 const authController = require("../controllers/authController");
+const { validate, validateAuth } = require("../middleware/validation");
+const {
+  authRateLimiter,
+  passwordResetLimiter,
+  registerRateLimiter,
+} = require("../middleware/rateLimiter");
 
-// Public routes
-router.post("/register", authController.register);
-router.post("/login", authController.login);
-router.post("/forgot-password", authController.forgotPassword);
-router.post("/reset-password/:token", authController.resetPassword);
+// Public routes with validation and rate limiting
+router.post(
+  "/register",
+  registerRateLimiter,
+  validateAuth.register,
+  validate,
+  authController.register,
+);
+
+router.post(
+  "/login",
+  authRateLimiter,
+  validateAuth.login,
+  validate,
+  authController.login,
+);
+
+router.post(
+  "/forgot-password",
+  passwordResetLimiter,
+  validateAuth.forgotPassword,
+  validate,
+  authController.forgotPassword,
+);
+
+router.post(
+  "/reset-password/:token",
+  passwordResetLimiter,
+  validateAuth.resetPassword,
+  validate,
+  authController.resetPassword,
+);
+
+// ✅ NEW: Refresh token route
+router.post("/refresh-token", authController.refreshToken);
 
 // Protected routes
 router.get("/me", auth, authController.getMe);
-router.put("/me", auth, authController.updateProfile);
+router.put(
+  "/me",
+  auth,
+  validateAuth.updateProfile,
+  validate,
+  authController.updateProfile,
+);
+
+// ✅ NEW: Logout route
+router.post("/logout", auth, authController.logout);
 
 module.exports = router;

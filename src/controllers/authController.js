@@ -1,14 +1,26 @@
-// src/controllers/authController.js
 const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { sendEmail } = require("../services/emailService");
+const logger = require("../utils/logger");
+const { getCache, setCache, deleteCache } = require("../config/redis");
 
 // Generate JWT Token
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE || "30d",
   });
+};
+
+// Generate refresh token
+const generateRefreshToken = (id) => {
+  return jwt.sign(
+    { id },
+    process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET,
+    {
+      expiresIn: "7d",
+    },
+  );
 };
 
 // @desc    Register user
@@ -18,8 +30,10 @@ exports.register = async (req, res) => {
   try {
     const { email, phone, password } = req.body;
 
-    // Check if user exists
-    const userExists = await User.findOne({ $or: [{ email }, { phone }] });
+    const userExists = await User.findOne({ $or: [{ email }, { phone }] })
+      .select("_id email phone")
+      .lean();
+
     if (userExists) {
       return res.status(400).json({
         success: false,
@@ -27,28 +41,33 @@ exports.register = async (req, res) => {
       });
     }
 
-    // Create user
     const user = await User.create({
       email,
       phone,
       password,
     });
 
-    // Generate token
     const token = generateToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+
+    const userData = {
+      _id: user._id,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+    };
+    await setCache(`user:${user._id}`, userData, 3600);
 
     res.status(201).json({
       success: true,
       data: {
-        _id: user._id,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
+        ...userData,
         token,
+        refreshToken,
       },
     });
   } catch (error) {
-    console.error("Register error:", error);
+    logger.error("Register error:", error);
     res.status(500).json({
       success: false,
       message: "Server error during registration",
@@ -63,8 +82,11 @@ exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Check for user
-    const user = await User.findOne({ email }).select("+password");
+    // ✅ FIX: Removed .lean() to allow instance methods like comparePassword()
+    const user = await User.findOne({ email }).select(
+      "+password +loginAttempts +lockUntil",
+    );
+
     if (!user) {
       return res.status(401).json({
         success: false,
@@ -72,33 +94,112 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Check password
+    // Check if account is locked
+    if (user.isLocked && user.isLocked()) {
+      const remainingTime = Math.ceil((user.lockUntil - Date.now()) / 60000);
+      return res.status(403).json({
+        success: false,
+        message: `Account locked. Please try again in ${remainingTime} minutes.`,
+      });
+    }
+
+    // Check password - works because user is a Mongoose document
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
+      // Increment login attempts
+      await user.incrementLoginAttempts();
+
       return res.status(401).json({
         success: false,
         message: "Invalid credentials",
       });
     }
 
-    // Generate token
+    // Reset login attempts on successful login
+    await User.findByIdAndUpdate(user._id, {
+      loginAttempts: 0,
+      lockUntil: null,
+    });
+
+    // Generate tokens
     const token = generateToken(user._id);
+    const refreshToken = generateRefreshToken(user._id);
+
+    // Cache user session
+    const userData = {
+      _id: user._id,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+    };
+    await setCache(`user:${user._id}`, userData, 3600);
+    await setCache(`session:${user._id}`, { token, refreshToken }, 3600);
 
     res.json({
       success: true,
       data: {
-        _id: user._id,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
+        ...userData,
         token,
+        refreshToken,
       },
     });
   } catch (error) {
-    console.error("Login error:", error);
+    logger.error("Login error:", error);
     res.status(500).json({
       success: false,
       message: "Server error during login",
+    });
+  }
+};
+
+// @desc    Refresh token
+// @route   POST /api/auth/refresh-token
+// @access  Public
+exports.refreshToken = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (!refreshToken) {
+      return res.status(401).json({
+        success: false,
+        message: "Refresh token required",
+      });
+    }
+
+    const decoded = jwt.verify(
+      refreshToken,
+      process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET,
+    );
+
+    const user = await User.findById(decoded.id).lean();
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const newToken = generateToken(user._id);
+    const newRefreshToken = generateRefreshToken(user._id);
+
+    await setCache(
+      `session:${user._id}`,
+      { token: newToken, refreshToken: newRefreshToken },
+      3600,
+    );
+
+    res.json({
+      success: true,
+      data: {
+        token: newToken,
+        refreshToken: newRefreshToken,
+      },
+    });
+  } catch (error) {
+    logger.error("Refresh token error:", error);
+    res.status(401).json({
+      success: false,
+      message: "Invalid refresh token",
     });
   }
 };
@@ -108,13 +209,35 @@ exports.login = async (req, res) => {
 // @access  Private
 exports.getMe = async (req, res) => {
   try {
-    const user = await User.findById(req.user.id).select("-password");
+    const cachedUser = await getCache(`user:${req.user.id}`);
+    if (cachedUser) {
+      return res.json({
+        success: true,
+        data: cachedUser,
+        fromCache: true,
+      });
+    }
+
+    const user = await User.findById(req.user.id)
+      .select("-password -__v")
+      .lean();
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    await setCache(`user:${req.user.id}`, user, 3600);
+
     res.json({
       success: true,
       data: user,
+      fromCache: false,
     });
   } catch (error) {
-    console.error("Get profile error:", error);
+    logger.error("Get profile error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -128,51 +251,57 @@ exports.getMe = async (req, res) => {
 exports.updateProfile = async (req, res) => {
   try {
     const { email, phone } = req.body;
-    const user = await User.findById(req.user.id);
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
+    const updateData = {};
+
+    if (email) {
+      const emailExists = await User.findOne({
+        email,
+        _id: { $ne: req.user.id },
       });
-    }
-
-    // Check if email/phone already exists
-    if (email && email !== user.email) {
-      const emailExists = await User.findOne({ email });
       if (emailExists) {
         return res.status(400).json({
           success: false,
           message: "Email already in use",
         });
       }
-      user.email = email;
+      updateData.email = email;
     }
 
-    if (phone && phone !== user.phone) {
-      const phoneExists = await User.findOne({ phone });
+    if (phone) {
+      const phoneExists = await User.findOne({
+        phone,
+        _id: { $ne: req.user.id },
+      });
       if (phoneExists) {
         return res.status(400).json({
           success: false,
           message: "Phone already in use",
         });
       }
-      user.phone = phone;
+      updateData.phone = phone;
     }
 
-    await user.save();
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "No fields to update",
+      });
+    }
+
+    const user = await User.findByIdAndUpdate(req.user.id, updateData, {
+      new: true,
+      runValidators: true,
+    }).select("-password -__v");
+
+    await deleteCache(`user:${req.user.id}`);
 
     res.json({
       success: true,
-      data: {
-        _id: user._id,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-      },
+      data: user,
     });
   } catch (error) {
-    console.error("Update profile error:", error);
+    logger.error("Update profile error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -187,101 +316,48 @@ exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
 
-    console.log("📧 Forgot password request for:", email);
-
     const user = await User.findOne({ email });
     if (!user) {
-      console.log("❌ User not found:", email);
-      return res.status(404).json({
-        success: false,
-        message: "No user found with this email",
+      return res.json({
+        success: true,
+        message: "If a user exists with this email, a reset link will be sent",
       });
     }
 
-    console.log("✅ User found:", user.email);
-
-    // Generate reset token
     const resetToken = crypto.randomBytes(32).toString("hex");
 
-    // Hash token and save to database
-    user.resetPasswordToken = crypto
+    const hashedToken = crypto
       .createHash("sha256")
       .update(resetToken)
       .digest("hex");
-    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    user.resetPasswordToken = hashedToken;
+    user.resetPasswordExpires = Date.now() + 3600000;
 
     await user.save();
-    console.log("✅ Reset token saved for user:", user.email);
 
-    // Create reset URL
     const resetUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/reset-password/${resetToken}`;
-    console.log("🔑 Reset URL:", resetUrl);
 
-    // Send email
-    console.log("📧 Attempting to send email...");
-    const emailResult = await sendEmail({
-      to: user.email,
-      subject: "Password Reset Request - IntimaCare",
-      html: `
-        <!DOCTYPE html>
-        <html>
-          <head>
-            <style>
-              body { font-family: Arial, sans-serif; background: #F7F3EA; padding: 40px 20px; }
-              .container { max-width: 500px; margin: 0 auto; background: white; padding: 40px; border: 1px solid #E6DFD1; }
-              .header { text-align: center; border-bottom: 1px solid #E6DFD1; padding-bottom: 20px; margin-bottom: 30px; }
-              .logo { font-family: Georgia, serif; font-size: 24px; color: #14120F; }
-              .button { display: inline-block; background: #14120F; color: #F7F3EA; padding: 12px 40px; text-decoration: none; letter-spacing: 0.15em; text-transform: uppercase; font-size: 12px; border: none; cursor: pointer; }
-              .button:hover { background: #1F3D33; }
-              .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #E6DFD1; text-align: center; font-size: 12px; color: #8C7B6B; }
-              .expiry { background: #FBF9F4; padding: 15px; font-size: 13px; color: #5C5348; margin: 20px 0; border-left: 3px solid #B08D4F; }
-            </style>
-          </head>
-          <body>
-            <div class="container">
-              <div class="header">
-                <div class="logo">IntimaCare</div>
-              </div>
-              
-              <h2 style="font-family: Georgia, serif; font-weight: 300; color: #14120F; margin-bottom: 10px;">Reset Your Password</h2>
-              <p style="color: #5C5348; line-height: 1.6; margin-bottom: 25px;">
-                We received a request to reset the password for your IntimaCare account. Click the button below to create a new password.
-              </p>
-              
-              <div style="text-align: center; margin: 30px 0;">
-                <a href="${resetUrl}" class="button">Reset Password</a>
-              </div>
-              
-              <div class="expiry">
-                ⏰ This link will expire in <strong>1 hour</strong>.
-              </div>
-              
-              <p style="color: #5C5348; font-size: 14px; margin-top: 20px;">
-                If you didn't request this, please ignore this email or contact support.
-              </p>
-              
-              <div class="footer">
-                <p>© ${new Date().getFullYear()} IntimaCare. All rights reserved.</p>
-              </div>
-            </div>
-          </body>
-        </html>
-      `,
+    setImmediate(async () => {
+      try {
+        await sendEmail({
+          to: user.email,
+          subject: "Password Reset Request - IntimaCare",
+          html: `<h1>Reset Your Password</h1><p>Click <a href="${resetUrl}">here</a> to reset your password.</p>`,
+        });
+      } catch (emailError) {
+        logger.error(`Failed to send email:`, emailError);
+      }
     });
-
-    console.log("📧 Email result:", emailResult);
 
     res.json({
       success: true,
-      message: "Password reset link sent to your email",
-      resetUrl: process.env.NODE_ENV === "development" ? resetUrl : undefined,
+      message: "If a user exists with this email, a reset link will be sent",
     });
   } catch (error) {
-    console.error("❌ Forgot password error:", error);
-    console.error("❌ Error stack:", error.stack);
+    logger.error("Forgot password error:", error);
     res.status(500).json({
       success: false,
-      message: `Error sending reset email: ${error.message}`,
+      message: "Error processing password reset request",
     });
   }
 };
@@ -294,10 +370,8 @@ exports.resetPassword = async (req, res) => {
     const { token } = req.params;
     const { password } = req.body;
 
-    // Hash the token from URL
     const hashedToken = crypto.createHash("sha256").update(token).digest("hex");
 
-    // Find user with valid token
     const user = await User.findOne({
       resetPasswordToken: hashedToken,
       resetPasswordExpires: { $gt: Date.now() },
@@ -310,24 +384,46 @@ exports.resetPassword = async (req, res) => {
       });
     }
 
-    // Update password
     user.password = password;
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
+    user.loginAttempts = 0;
+    user.lockUntil = undefined;
 
     await user.save();
 
-    console.log("✅ Password reset successful for:", user.email);
+    await deleteCache(`user:${user._id}`);
+    await deleteCache(`session:${user._id}`);
 
     res.json({
       success: true,
       message: "Password reset successfully",
     });
   } catch (error) {
-    console.error("Reset password error:", error);
+    logger.error("Reset password error:", error);
     res.status(500).json({
       success: false,
       message: "Error resetting password",
+    });
+  }
+};
+
+// @desc    Logout user
+// @route   POST /api/auth/logout
+// @access  Private
+exports.logout = async (req, res) => {
+  try {
+    await deleteCache(`session:${req.user.id}`);
+
+    res.json({
+      success: true,
+      message: "Logged out successfully",
+    });
+  } catch (error) {
+    logger.error("Logout error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error logging out",
     });
   }
 };
