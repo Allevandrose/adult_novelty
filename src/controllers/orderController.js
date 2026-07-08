@@ -2,37 +2,37 @@ const Order = require("../models/Order");
 const Product = require("../models/Product");
 const { generateOrderNumber } = require("../utils/generateOrderNumber");
 const { sendEmail } = require("../services/emailService");
+const logger = require("../utils/logger");
 
-// ✅ Shipping configuration from environment variables
+// Shipping configuration from environment variables
 const SHIPPING_FEE = parseInt(process.env.SHIPPING_FEE) || 0;
 const FREE_SHIPPING_THRESHOLD =
   parseInt(process.env.FREE_SHIPPING_THRESHOLD) || 0;
 
 // @desc    Create order
-// @route    POST /api/orders
-// @access   Private
+// @route   POST /api/orders
+// @access  Private
 const createOrder = async (req, res) => {
   try {
     const { items, shippingAddress, notes } = req.body;
 
-    console.log("📥 Received order request:");
-    console.log("  Items:", JSON.stringify(items, null, 2));
-    console.log("  Shipping Address:", shippingAddress);
-    console.log("  Notes:", notes);
-    console.log("  User ID:", req.user.id);
+    logger.info("📥 Received order request");
+    logger.debug("  Items:", JSON.stringify(items, null, 2));
+    logger.debug("  Shipping Address:", shippingAddress);
+    logger.debug("  User ID:", req.user.id);
 
-    // ✅ Validate items
+    // Validate items
     if (!items || items.length === 0) {
-      console.log("❌ No items in order");
+      logger.warn("❌ No items in order");
       return res.status(400).json({
         success: false,
         message: "Order must contain at least one item",
       });
     }
 
-    // ✅ Validate shipping address
+    // Validate shipping address
     if (!shippingAddress || !shippingAddress.phone) {
-      console.log("❌ Missing shipping address or phone");
+      logger.warn("❌ Missing shipping address or phone");
       return res.status(400).json({
         success: false,
         message: "Shipping address with phone number is required",
@@ -43,11 +43,10 @@ const createOrder = async (req, res) => {
     const orderItems = [];
 
     for (const item of items) {
-      console.log(`🔍 Looking for product: ${item.productId}`);
+      logger.debug(`🔍 Looking for product: ${item.productId}`);
 
-      // ✅ Validate productId exists
       if (!item.productId) {
-        console.log("❌ Missing productId in item:", item);
+        logger.warn("❌ Missing productId in item:", item);
         return res.status(400).json({
           success: false,
           message: "Each item must have a productId",
@@ -56,24 +55,20 @@ const createOrder = async (req, res) => {
 
       const product = await Product.findById(item.productId);
       if (!product) {
-        console.log(`❌ Product not found: ${item.productId}`);
+        logger.warn(`❌ Product not found: ${item.productId}`);
         return res.status(404).json({
           success: false,
           message: `Product not found: ${item.productId}`,
         });
       }
 
-      console.log(`✅ Product found: ${product.name}`);
-      console.log(
-        `📦 Product variants:`,
-        JSON.stringify(product.variants, null, 2),
-      );
+      logger.debug(`✅ Product found: ${product.name}`);
 
       const hasValidVariant =
         item.selectedVariant?.size || item.selectedVariant?.color;
 
       if (hasValidVariant) {
-        console.log(`🔍 Looking for variant:`, {
+        logger.debug(`🔍 Looking for variant:`, {
           size: item.selectedVariant.size,
           color: item.selectedVariant.color,
         });
@@ -92,7 +87,7 @@ const createOrder = async (req, res) => {
             )
             .join(", ");
 
-          console.log(`❌ Variant not found. Available: ${available}`);
+          logger.warn(`❌ Variant not found. Available: ${available}`);
           return res.status(400).json({
             success: false,
             message: `Variant "${item.selectedVariant.color} ${item.selectedVariant.size}" not found. Available variants: ${available}`,
@@ -100,7 +95,7 @@ const createOrder = async (req, res) => {
         }
 
         if (variant.stock < item.quantity) {
-          console.log(
+          logger.warn(
             `❌ Insufficient stock: ${variant.stock} < ${item.quantity}`,
           );
           return res.status(400).json({
@@ -123,9 +118,8 @@ const createOrder = async (req, res) => {
           },
         });
       } else {
-        // No variant - use product stock
         if (product.stock < item.quantity) {
-          console.log(
+          logger.warn(
             `❌ Insufficient stock: ${product.stock} < ${item.quantity}`,
           );
           return res.status(400).json({
@@ -147,11 +141,11 @@ const createOrder = async (req, res) => {
       }
     }
 
-    // ✅ Calculate shipping
+    // Calculate shipping
     const shippingCost = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
     const totalAmount = subtotal + shippingCost;
 
-    console.log(
+    logger.info(
       `💰 Order totals: Subtotal=${subtotal}, Shipping=${shippingCost}, Total=${totalAmount}`,
     );
 
@@ -176,85 +170,92 @@ const createOrder = async (req, res) => {
       ],
     });
 
-    console.log(`✅ Order created: ${orderNumber}`);
+    logger.info(`✅ Order created: ${orderNumber}`);
 
-    // After order is created, send confirmation email
-    try {
-      await sendEmail({
-        to: req.user.email,
-        subject: `Order Confirmation - ${orderNumber}`,
-        html: `
-          <!DOCTYPE html>
-          <html>
-            <head>
-              <style>
-                body { font-family: Arial, sans-serif; background: #F7F3EA; padding: 40px 20px; }
-                .container { max-width: 500px; margin: 0 auto; background: white; padding: 40px; border: 1px solid #E6DFD1; }
-                .header { text-align: center; border-bottom: 1px solid #E6DFD1; padding-bottom: 20px; margin-bottom: 30px; }
-                .logo { font-family: Georgia, serif; font-size: 24px; color: #14120F; }
-                .order-number { background: #FBF9F4; padding: 15px; font-size: 14px; color: #5C5348; margin: 20px 0; border-left: 3px solid #B08D4F; }
-                .button { display: inline-block; background: #14120F; color: #F7F3EA; padding: 12px 40px; text-decoration: none; letter-spacing: 0.15em; text-transform: uppercase; font-size: 12px; border: none; cursor: pointer; }
-                .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #E6DFD1; text-align: center; font-size: 12px; color: #8C7B6B; }
-              </style>
-            </head>
-            <body>
-              <div class="container">
-                <div class="header">
-                  <div class="logo">IntimaCare</div>
+    // ✅ FIX: Send email in background (non-blocking) with setImmediate
+    setImmediate(async () => {
+      try {
+        const user = req.user;
+        await sendEmail({
+          to: user.email,
+          subject: `Order Confirmation - ${orderNumber}`,
+          html: `
+            <!DOCTYPE html>
+            <html>
+              <head>
+                <style>
+                  body { font-family: Arial, sans-serif; background: #F7F3EA; padding: 40px 20px; }
+                  .container { max-width: 500px; margin: 0 auto; background: white; padding: 40px; border: 1px solid #E6DFD1; }
+                  .header { text-align: center; border-bottom: 1px solid #E6DFD1; padding-bottom: 20px; margin-bottom: 30px; }
+                  .logo { font-family: Georgia, serif; font-size: 24px; color: #14120F; }
+                  .order-number { background: #FBF9F4; padding: 15px; font-size: 14px; color: #5C5348; margin: 20px 0; border-left: 3px solid #B08D4F; }
+                  .button { display: inline-block; background: #14120F; color: #F7F3EA; padding: 12px 40px; text-decoration: none; letter-spacing: 0.15em; text-transform: uppercase; font-size: 12px; border: none; cursor: pointer; }
+                  .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #E6DFD1; text-align: center; font-size: 12px; color: #8C7B6B; }
+                </style>
+              </head>
+              <body>
+                <div class="container">
+                  <div class="header">
+                    <div class="logo">IntimaCare</div>
+                  </div>
+                  <h2 style="font-family: Georgia, serif; font-weight: 300; color: #14120F; margin-bottom: 10px;">
+                    Order Received! 📦
+                  </h2>
+                  <p style="color: #5C5348; line-height: 1.6; margin-bottom: 25px;">
+                    Thank you for your order. We'll notify you once payment is confirmed.
+                  </p>
+                  <div class="order-number">
+                    <strong>Order Number:</strong> ${orderNumber}
+                  </div>
+                  <p style="color: #5C5348; font-size: 14px; margin-top: 20px;">
+                    <strong>Total Amount:</strong> KES ${totalAmount}
+                  </p>
+                  <div style="text-align: center; margin: 30px 0;">
+                    <a href="${process.env.FRONTEND_URL}/orders/${order._id}" class="button">
+                      View Order Details
+                    </a>
+                  </div>
+                  <div class="footer">
+                    <p>© ${new Date().getFullYear()} IntimaCare. All rights reserved.</p>
+                    <p style="margin-top: 10px;">Discreet packaging • Secure payment</p>
+                  </div>
                 </div>
-                <h2 style="font-family: Georgia, serif; font-weight: 300; color: #14120F; margin-bottom: 10px;">
-                  Order Received! 📦
-                </h2>
-                <p style="color: #5C5348; line-height: 1.6; margin-bottom: 25px;">
-                  Thank you for your order. We'll notify you once payment is confirmed.
-                </p>
-                <div class="order-number">
-                  <strong>Order Number:</strong> ${orderNumber}
-                </div>
-                <p style="color: #5C5348; font-size: 14px; margin-top: 20px;">
-                  <strong>Total Amount:</strong> KES ${totalAmount}
-                </p>
-                <div style="text-align: center; margin: 30px 0;">
-                  <a href="${process.env.FRONTEND_URL}/orders/${order._id}" class="button">
-                    View Order Details
-                  </a>
-                </div>
-                <div class="footer">
-                  <p>© ${new Date().getFullYear()} IntimaCare. All rights reserved.</p>
-                  <p style="margin-top: 10px;">Discreet packaging • Secure payment</p>
-                </div>
-              </div>
-            </body>
-          </html>
-        `,
-      });
-      console.log(`📧 Order confirmation email sent to: ${req.user.email}`);
-    } catch (emailError) {
-      console.error(
-        "❌ Failed to send confirmation email:",
-        emailError.message,
-      );
-    }
+              </body>
+            </html>
+          `,
+        });
+        logger.info(`📧 Order confirmation email sent to: ${user.email}`);
+      } catch (emailError) {
+        logger.error(
+          "❌ Failed to send confirmation email:",
+          emailError.message,
+        );
+      }
+    });
 
-    res.status(201).json({
+    // ✅ Send response immediately (don't wait for email)
+    return res.status(201).json({
       success: true,
       data: order,
     });
   } catch (error) {
-    console.error("❌ Create order error:", error);
-    console.error("❌ Error stack:", error.stack);
-    console.error("❌ Error name:", error.name);
-    console.error("❌ Error message:", error.message);
-    console.error("❌ Error details:", JSON.stringify(error, null, 2));
+    logger.error("❌ Create order error:", error);
+    logger.error("❌ Error stack:", error.stack);
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: error.message || "Server error",
-      details: process.env.NODE_ENV === "development" ? error.stack : undefined,
+      ...(process.env.NODE_ENV === "development" && {
+        stack: error.stack,
+        details: error.toString(),
+      }),
     });
   }
 };
 
+// @desc    Get user's orders
+// @route   GET /api/orders/myorders
+// @access  Private
 const getMyOrders = async (req, res) => {
   try {
     const orders = await Order.find({ user: req.user.id })
@@ -267,7 +268,7 @@ const getMyOrders = async (req, res) => {
       data: orders,
     });
   } catch (error) {
-    console.error("Get my orders error:", error);
+    logger.error("Get my orders error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -275,6 +276,9 @@ const getMyOrders = async (req, res) => {
   }
 };
 
+// @desc    Get single order
+// @route   GET /api/orders/:id
+// @access  Private
 const getOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
@@ -303,7 +307,7 @@ const getOrder = async (req, res) => {
       data: order,
     });
   } catch (error) {
-    console.error("Get order error:", error);
+    logger.error("Get order error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -311,6 +315,9 @@ const getOrder = async (req, res) => {
   }
 };
 
+// @desc    Cancel order
+// @route   PUT /api/orders/:id/cancel
+// @access  Private
 const cancelOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
@@ -332,7 +339,7 @@ const cancelOrder = async (req, res) => {
     if (!["pending", "processing"].includes(order.status)) {
       return res.status(400).json({
         success: false,
-        message: "Order cannot be cancelled. Current status: " + order.status,
+        message: `Order cannot be cancelled. Current status: ${order.status}`,
       });
     }
 
@@ -350,7 +357,7 @@ const cancelOrder = async (req, res) => {
       message: "Order cancelled successfully",
     });
   } catch (error) {
-    console.error("Cancel order error:", error);
+    logger.error("Cancel order error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -358,6 +365,9 @@ const cancelOrder = async (req, res) => {
   }
 };
 
+// @desc    Get all orders (admin only)
+// @route   GET /api/orders
+// @access  Private/Admin
 const getOrders = async (req, res) => {
   try {
     const { status, page = 1, limit = 20 } = req.query;
@@ -384,7 +394,7 @@ const getOrders = async (req, res) => {
       data: orders,
     });
   } catch (error) {
-    console.error("Get orders error:", error);
+    logger.error("Get orders error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",
@@ -392,6 +402,9 @@ const getOrders = async (req, res) => {
   }
 };
 
+// @desc    Update order status (admin only)
+// @route   PUT /api/orders/:id/status
+// @access  Private/Admin
 const updateOrderStatus = async (req, res) => {
   try {
     const { status, note } = req.body;
@@ -425,33 +438,91 @@ const updateOrderStatus = async (req, res) => {
       note: note || `Order ${status}`,
     });
 
+    // If status is paid, update stock
     if (status === "paid") {
       for (const item of order.items) {
         const product = await Product.findById(item.product);
-        if (item.selectedVariant && item.selectedVariant.size) {
-          const variant = product.variants.find(
-            (v) =>
-              v.size === item.selectedVariant.size &&
-              v.color === item.selectedVariant.color,
-          );
-          if (variant) {
-            variant.stock -= item.quantity;
+        if (product) {
+          if (item.selectedVariant && item.selectedVariant.size) {
+            const variant = product.variants.find(
+              (v) =>
+                v.size === item.selectedVariant.size &&
+                v.color === item.selectedVariant.color,
+            );
+            if (variant) {
+              variant.stock -= item.quantity;
+            }
+          } else {
+            product.stock -= item.quantity;
           }
-        } else {
-          product.stock -= item.quantity;
+          await product.save();
         }
-        await product.save();
       }
     }
 
     await order.save();
+
+    // Send email notification for status update
+    setImmediate(async () => {
+      try {
+        await sendEmail({
+          to: order.user.email,
+          subject: `Order Update - ${order.orderNumber}`,
+          html: `
+            <!DOCTYPE html>
+            <html>
+              <head>
+                <style>
+                  body { font-family: Arial, sans-serif; background: #F7F3EA; padding: 40px 20px; }
+                  .container { max-width: 500px; margin: 0 auto; background: white; padding: 40px; border: 1px solid #E6DFD1; }
+                  .header { text-align: center; border-bottom: 1px solid #E6DFD1; padding-bottom: 20px; margin-bottom: 30px; }
+                  .logo { font-family: Georgia, serif; font-size: 24px; color: #14120F; }
+                  .status-box { background: #FBF9F4; padding: 15px; font-size: 14px; color: #5C5348; margin: 20px 0; border-left: 3px solid #B08D4F; }
+                  .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #E6DFD1; text-align: center; font-size: 12px; color: #8C7B6B; }
+                </style>
+              </head>
+              <body>
+                <div class="container">
+                  <div class="header">
+                    <div class="logo">IntimaCare</div>
+                  </div>
+                  <h2 style="font-family: Georgia, serif; font-weight: 300; color: #14120F; margin-bottom: 10px;">
+                    Order Status Update
+                  </h2>
+                  <p style="color: #5C5348; line-height: 1.6; margin-bottom: 25px;">
+                    Your order <strong>${order.orderNumber}</strong> status has been updated to:
+                  </p>
+                  <div class="status-box">
+                    <strong>Status:</strong> ${status.toUpperCase()}
+                  </div>
+                  <div style="text-align: center; margin: 30px 0;">
+                    <a href="${process.env.FRONTEND_URL}/orders/${order._id}" class="button" style="display: inline-block; background: #14120F; color: #F7F3EA; padding: 12px 40px; text-decoration: none; letter-spacing: 0.15em; text-transform: uppercase; font-size: 12px; border: none; cursor: pointer;">
+                      View Order
+                    </a>
+                  </div>
+                  <div class="footer">
+                    <p>© ${new Date().getFullYear()} IntimaCare. All rights reserved.</p>
+                  </div>
+                </div>
+              </body>
+            </html>
+          `,
+        });
+        logger.info(`📧 Status update email sent to: ${order.user.email}`);
+      } catch (emailError) {
+        logger.error(
+          "❌ Failed to send status update email:",
+          emailError.message,
+        );
+      }
+    });
 
     res.json({
       success: true,
       data: order,
     });
   } catch (error) {
-    console.error("Update order status error:", error);
+    logger.error("Update order status error:", error);
     res.status(500).json({
       success: false,
       message: "Server error",

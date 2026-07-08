@@ -23,33 +23,50 @@ const app = express();
 // Connect to MongoDB
 connectDB();
 
-// ✅ FIX: Compression middleware - add EARLY in middleware chain
+// Compression middleware
 app.use(
   compression({
-    level: 6, // Balanced compression
-    threshold: 1024, // Only compress responses > 1KB
+    level: 6,
+    threshold: 1024,
     filter: (req, res) => {
-      // Skip compression for SSE/WebSocket connections
       if (req.headers["upgrade"] === "websocket") return false;
       return compression.filter(req, res);
     },
   }),
 );
 
-// ✅ FIX: Helmet with optimized config
+// Helmet with optimized config
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
     crossOriginOpenerPolicy: false,
     crossOriginEmbedderPolicy: false,
-    contentSecurityPolicy: false, // Disable if you need inline scripts
+    contentSecurityPolicy: false,
   }),
 );
 
-// CORS - Allow all origins in development
+// ✅ FIXED: CORS with specific allowed origins
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:5000",
+  "https://intimacare.netlify.app",
+  "https://adult-novelty.onrender.com",
+  "https://intimacare.netlify.app",
+];
+
 app.use(
   cors({
-    origin: true,
+    origin: function (origin, callback) {
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        callback(null, true);
+      } else {
+        logger.warn("❌ CORS blocked origin:", origin);
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allowedHeaders: [
@@ -63,34 +80,29 @@ app.use(
   }),
 );
 
-// ✅ FIX: Route-specific rate limiting
-// Stricter for auth routes
+// Route-specific rate limiting
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20, // 20 attempts per 15 minutes for auth
+  max: 20,
   message: "Too many authentication attempts, please try again later",
-  skipSuccessfulRequests: true, // Don't count successful logins
+  skipSuccessfulRequests: true,
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// General API rate limiting
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100, // 100 requests per 15 minutes for API
+  max: 100,
   message: "Too many requests, please try again later",
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// Apply general API rate limiting
 app.use("/api", apiLimiter);
-// Apply strict rate limiting to auth routes
 app.use("/api/auth", authLimiter);
 
-// ✅ FIX: Request timeout middleware
+// Request timeout middleware
 app.use((req, res, next) => {
-  // Set timeout to 30 seconds
   req.setTimeout(30000, () => {
     res.status(408).json({
       success: false,
@@ -104,13 +116,12 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// ✅ FIX: Serve static files with caching headers
+// Serve static files with caching headers
 app.use(
   "/uploads",
   express.static(path.join(__dirname, "../public/uploads"), {
-    maxAge: "7d", // Cache for 7 days
+    maxAge: "7d",
     setHeaders: (res, filePath) => {
-      // Only set CORS for images
       if (filePath.match(/\.(jpg|jpeg|png|gif|webp)$/)) {
         res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
         res.setHeader("Access-Control-Allow-Origin", "*");
@@ -120,11 +131,10 @@ app.use(
   }),
 );
 
-// Logging - Optimized for production
+// Logging
 if (process.env.NODE_ENV === "development") {
   app.use(morgan("dev"));
 } else {
-  // In production, log only errors via morgan
   app.use(
     morgan("combined", {
       skip: (req, res) => res.statusCode < 400,
@@ -133,7 +143,7 @@ if (process.env.NODE_ENV === "development") {
   );
 }
 
-// ✅ FIX: Enhanced health check with more details
+// Health check
 app.get("/health", (req, res) => {
   const memoryUsage = process.memoryUsage();
   res.json({
@@ -183,7 +193,7 @@ app.use((req, res) => {
   });
 });
 
-// ✅ FIX: Enhanced error handler
+// Enhanced error handler
 app.use((err, req, res, next) => {
   const statusCode = err.statusCode || 500;
   const message = err.message || "Server error";
@@ -207,21 +217,27 @@ const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
   logger.info(`📁 Environment: ${process.env.NODE_ENV}`);
-  logger.info(`✅ CORS: All origins allowed`);
+  logger.info(`✅ CORS: Configured with allowed origins`);
   logger.info(`📁 Uploads served from: /uploads`);
   logger.info(`✅ Compression: Enabled`);
   logger.info(`✅ Rate Limiting: Enabled`);
 });
 
-// ✅ FIX: Graceful shutdown
+// ✅ FIXED: Graceful shutdown - prevent premature exit
 const gracefulShutdown = () => {
   logger.info("🔄 Received shutdown signal, closing server...");
+
+  // Stop accepting new connections
   server.close(async () => {
     logger.info("✅ HTTP server closed");
 
-    // Close MongoDB connection
-    await mongoose.connection.close();
-    logger.info("✅ MongoDB connection closed");
+    try {
+      // Close MongoDB connection
+      await mongoose.connection.close();
+      logger.info("✅ MongoDB connection closed");
+    } catch (err) {
+      logger.error("❌ Error closing MongoDB:", err);
+    }
 
     process.exit(0);
   });
@@ -233,6 +249,7 @@ const gracefulShutdown = () => {
   }, 10000);
 };
 
+// Only listen for SIGTERM and SIGINT once
 process.on("SIGTERM", gracefulShutdown);
 process.on("SIGINT", gracefulShutdown);
 
