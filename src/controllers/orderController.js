@@ -1,13 +1,14 @@
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const { generateOrderNumber } = require("../utils/generateOrderNumber");
+const { sendEmail } = require("../services/emailService");
 
 // ✅ Shipping configuration from environment variables
 const SHIPPING_FEE = parseInt(process.env.SHIPPING_FEE) || 0;
 const FREE_SHIPPING_THRESHOLD =
   parseInt(process.env.FREE_SHIPPING_THRESHOLD) || 0;
 
-// @desc     Create order
+// @desc    Create order
 // @route    POST /api/orders
 // @access   Private
 const createOrder = async (req, res) => {
@@ -130,10 +131,6 @@ const createOrder = async (req, res) => {
       }
     }
 
-    // ✅ Calculate shipping using environment variables
-    // If subtotal is 0, charge shipping fee (shouldn't happen with valid items)
-    // If subtotal >= FREE_SHIPPING_THRESHOLD, free shipping
-    // Otherwise, charge SHIPPING_FEE
     const shippingCost = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
     const totalAmount = subtotal + shippingCost;
 
@@ -164,6 +161,64 @@ const createOrder = async (req, res) => {
 
     console.log(`✅ Order created: ${orderNumber}`);
 
+    // After order is created, send confirmation email
+    try {
+      await sendEmail({
+        to: req.user.email,
+        subject: `Order Confirmation - ${orderNumber}`,
+        html: `
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <style>
+                body { font-family: Arial, sans-serif; background: #F7F3EA; padding: 40px 20px; }
+                .container { max-width: 500px; margin: 0 auto; background: white; padding: 40px; border: 1px solid #E6DFD1; }
+                .header { text-align: center; border-bottom: 1px solid #E6DFD1; padding-bottom: 20px; margin-bottom: 30px; }
+                .logo { font-family: Georgia, serif; font-size: 24px; color: #14120F; }
+                .order-number { background: #FBF9F4; padding: 15px; font-size: 14px; color: #5C5348; margin: 20px 0; border-left: 3px solid #B08D4F; }
+                .button { display: inline-block; background: #14120F; color: #F7F3EA; padding: 12px 40px; text-decoration: none; letter-spacing: 0.15em; text-transform: uppercase; font-size: 12px; border: none; cursor: pointer; }
+                .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #E6DFD1; text-align: center; font-size: 12px; color: #8C7B6B; }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="header">
+                  <div class="logo">IntimaCare</div>
+                </div>
+                <h2 style="font-family: Georgia, serif; font-weight: 300; color: #14120F; margin-bottom: 10px;">
+                  Order Received! 📦
+                </h2>
+                <p style="color: #5C5348; line-height: 1.6; margin-bottom: 25px;">
+                  Thank you for your order. We'll notify you once payment is confirmed.
+                </p>
+                <div class="order-number">
+                  <strong>Order Number:</strong> ${orderNumber}
+                </div>
+                <p style="color: #5C5348; font-size: 14px; margin-top: 20px;">
+                  <strong>Total Amount:</strong> KES ${totalAmount}
+                </p>
+                <div style="text-align: center; margin: 30px 0;">
+                  <a href="${process.env.FRONTEND_URL}/orders/${order._id}" class="button">
+                    View Order Details
+                  </a>
+                </div>
+                <div class="footer">
+                  <p>© ${new Date().getFullYear()} IntimaCare. All rights reserved.</p>
+                  <p style="margin-top: 10px;">Discreet packaging • Secure payment</p>
+                </div>
+              </div>
+            </body>
+          </html>
+        `,
+      });
+      console.log(`📧 Order confirmation email sent to: ${req.user.email}`);
+    } catch (emailError) {
+      console.error(
+        "❌ Failed to send confirmation email:",
+        emailError.message,
+      );
+    }
+
     res.status(201).json({
       success: true,
       data: order,
@@ -177,9 +232,8 @@ const createOrder = async (req, res) => {
   }
 };
 
-// @desc     Get user's orders
-// @route    GET /api/orders/myorders
-// @access   Private
+// ... (rest of the controller functions remain unchanged)
+
 const getMyOrders = async (req, res) => {
   try {
     const orders = await Order.find({ user: req.user.id })
@@ -200,9 +254,6 @@ const getMyOrders = async (req, res) => {
   }
 };
 
-// @desc     Get single order
-// @route    GET /api/orders/:id
-// @access   Private
 const getOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
@@ -216,7 +267,6 @@ const getOrder = async (req, res) => {
       });
     }
 
-    // Check if user owns this order or is admin
     if (
       order.user._id.toString() !== req.user.id &&
       req.user.role !== "admin"
@@ -240,9 +290,6 @@ const getOrder = async (req, res) => {
   }
 };
 
-// @desc     Cancel order (user owned context)
-// @route    PUT /api/orders/:id/cancel
-// @access   Private
 const cancelOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
@@ -254,7 +301,6 @@ const cancelOrder = async (req, res) => {
       });
     }
 
-    // Check if user owns this order
     if (order.user.toString() !== req.user.id) {
       return res.status(403).json({
         success: false,
@@ -262,7 +308,6 @@ const cancelOrder = async (req, res) => {
       });
     }
 
-    // Only allow cancellation if status is pending or processing
     if (!["pending", "processing"].includes(order.status)) {
       return res.status(400).json({
         success: false,
@@ -292,9 +337,6 @@ const cancelOrder = async (req, res) => {
   }
 };
 
-// @desc     Get all orders (admin only)
-// @route    GET /api/orders
-// @access   Private/Admin
 const getOrders = async (req, res) => {
   try {
     const { status, page = 1, limit = 20 } = req.query;
@@ -329,9 +371,6 @@ const getOrders = async (req, res) => {
   }
 };
 
-// @desc     Update order status (admin only)
-// @route    PUT /api/orders/:id/status
-// @access   Private/Admin
 const updateOrderStatus = async (req, res) => {
   try {
     const { status, note } = req.body;
@@ -365,7 +404,6 @@ const updateOrderStatus = async (req, res) => {
       note: note || `Order ${status}`,
     });
 
-    // If status is paid, update stock
     if (status === "paid") {
       for (const item of order.items) {
         const product = await Product.findById(item.product);
