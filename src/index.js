@@ -70,20 +70,6 @@ if (process.env.NODE_ENV === "development") {
   app.use(morgan("dev"));
 }
 
-// Root route
-app.get("/", (req, res) => {
-  res.json({
-    success: true,
-    message: "Adult Novelty API is running",
-    version: "1.0.0",
-    endpoints: {
-      health: "/health",
-      api: "/api",
-      docs: "https://github.com/Allevandrose/adult_novelty",
-    },
-  });
-});
-
 // Health check
 app.get("/health", (req, res) => {
   res.json({
@@ -104,6 +90,21 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/cart", cartRoutes);
 // 🛠️ ADDED: Admin routes registration
 app.use("/api/admin", adminRoutes);
+
+// Root route (Updated per your request)
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    message: "IntimaCare API is running",
+    version: "1.0.0",
+    endpoints: {
+      health: "/health",
+      api: "/api",
+      products: "/api/products",
+      categories: "/api/categories",
+    },
+  });
+});
 
 // 404 handler
 app.use((req, res) => {
