@@ -15,17 +15,13 @@ const createOrder = async (req, res) => {
   try {
     const { items, shippingAddress, notes } = req.body;
 
-    // ✅ DEBUG: Log the received data
     console.log("📥 Received order request:");
     console.log("  Items:", JSON.stringify(items, null, 2));
     console.log("  Shipping Address:", shippingAddress);
     console.log("  Notes:", notes);
     console.log("  User ID:", req.user.id);
-    console.log(
-      `📦 Shipping: Fee=${SHIPPING_FEE}, Free threshold=${FREE_SHIPPING_THRESHOLD}`,
-    );
 
-    // ✅ Check if items exist
+    // ✅ Validate items
     if (!items || items.length === 0) {
       console.log("❌ No items in order");
       return res.status(400).json({
@@ -34,7 +30,7 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // ✅ Check shipping address
+    // ✅ Validate shipping address
     if (!shippingAddress || !shippingAddress.phone) {
       console.log("❌ Missing shipping address or phone");
       return res.status(400).json({
@@ -43,15 +39,13 @@ const createOrder = async (req, res) => {
       });
     }
 
-    // ✅ Validate each item
     let subtotal = 0;
     const orderItems = [];
 
     for (const item of items) {
       console.log(`🔍 Looking for product: ${item.productId}`);
-      console.log("📦 Item data:", JSON.stringify(item, null, 2));
 
-      // ✅ Check if productId exists
+      // ✅ Validate productId exists
       if (!item.productId) {
         console.log("❌ Missing productId in item:", item);
         return res.status(400).json({
@@ -71,11 +65,10 @@ const createOrder = async (req, res) => {
 
       console.log(`✅ Product found: ${product.name}`);
       console.log(
-        `📋 Product variants:`,
+        `📦 Product variants:`,
         JSON.stringify(product.variants, null, 2),
       );
 
-      // ✅ Check if variant has actual values
       const hasValidVariant =
         item.selectedVariant?.size || item.selectedVariant?.color;
 
@@ -85,7 +78,6 @@ const createOrder = async (req, res) => {
           color: item.selectedVariant.color,
         });
 
-        // Find the specific variant
         const variant = product.variants.find(
           (v) =>
             v.size === item.selectedVariant.size &&
@@ -93,22 +85,24 @@ const createOrder = async (req, res) => {
         );
 
         if (!variant) {
-          console.log(`❌ Variant not found:`, {
-            size: item.selectedVariant.size,
-            color: item.selectedVariant.color,
-            availableVariants: product.variants.map((v) => ({
-              size: v.size,
-              color: v.color,
-            })),
-          });
+          const available = product.variants
+            .map(
+              (v) =>
+                `${v.color || "No color"} ${v.size || "No size"} (stock: ${v.stock})`,
+            )
+            .join(", ");
 
+          console.log(`❌ Variant not found. Available: ${available}`);
           return res.status(400).json({
             success: false,
-            message: `Variant not found for ${product.name} - ${item.selectedVariant.color} ${item.selectedVariant.size}`,
+            message: `Variant "${item.selectedVariant.color} ${item.selectedVariant.size}" not found. Available variants: ${available}`,
           });
         }
 
         if (variant.stock < item.quantity) {
+          console.log(
+            `❌ Insufficient stock: ${variant.stock} < ${item.quantity}`,
+          );
           return res.status(400).json({
             success: false,
             message: `Insufficient stock for ${product.name} - ${item.selectedVariant.color} ${item.selectedVariant.size}. Available: ${variant.stock}`,
@@ -131,6 +125,9 @@ const createOrder = async (req, res) => {
       } else {
         // No variant - use product stock
         if (product.stock < item.quantity) {
+          console.log(
+            `❌ Insufficient stock: ${product.stock} < ${item.quantity}`,
+          );
           return res.status(400).json({
             success: false,
             message: `Insufficient stock for ${product.name}. Available: ${product.stock}`,
@@ -150,6 +147,7 @@ const createOrder = async (req, res) => {
       }
     }
 
+    // ✅ Calculate shipping
     const shippingCost = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
     const totalAmount = subtotal + shippingCost;
 
@@ -244,9 +242,15 @@ const createOrder = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Create order error:", error);
+    console.error("❌ Error stack:", error.stack);
+    console.error("❌ Error name:", error.name);
+    console.error("❌ Error message:", error.message);
+    console.error("❌ Error details:", JSON.stringify(error, null, 2));
+
     res.status(500).json({
       success: false,
       message: error.message || "Server error",
+      details: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
 };
