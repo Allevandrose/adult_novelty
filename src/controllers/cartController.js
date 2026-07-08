@@ -32,6 +32,14 @@ exports.getCart = async (req, res) => {
 // @access  Private
 exports.addToCart = async (req, res) => {
   try {
+    // ✅ FIX: Check if user exists on req
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({
+        success: false,
+        message: "User not authenticated",
+      });
+    }
+
     const { productId, quantity, selectedVariant } = req.body;
 
     // ✅ Validate product exists
@@ -57,7 +65,6 @@ exports.addToCart = async (req, res) => {
         });
       }
 
-      // ✅ Check variant stock
       if (variant.stock < quantity) {
         return res.status(400).json({
           success: false,
@@ -65,7 +72,6 @@ exports.addToCart = async (req, res) => {
         });
       }
     } else {
-      // ✅ Check product stock (no variant)
       if (product.stock < quantity) {
         return res.status(400).json({
           success: false,
@@ -105,7 +111,6 @@ exports.addToCart = async (req, res) => {
     });
 
     if (itemIndex > -1) {
-      // ✅ Check if total cumulative quantity would exceed stock
       const newQuantity = cart.items[itemIndex].quantity + quantity;
 
       if (selectedVariant && selectedVariant.size) {
@@ -129,10 +134,8 @@ exports.addToCart = async (req, res) => {
         }
       }
 
-      // Update quantity
       cart.items[itemIndex].quantity = newQuantity;
     } else {
-      // Add new item
       cart.items.push({
         product: productId,
         quantity,
@@ -168,7 +171,6 @@ exports.updateCartItem = async (req, res) => {
     const { productId } = req.params;
     const { quantity, selectedVariant } = req.body;
 
-    // ✅ Validate product exists
     const product = await Product.findById(productId);
     if (!product) {
       return res.status(404).json({
@@ -186,7 +188,6 @@ exports.updateCartItem = async (req, res) => {
       });
     }
 
-    // Find item with matching product and variant
     const itemIndex = cart.items.findIndex((item) => {
       const sameProduct = item.product.toString() === productId;
       const sameVariant =
@@ -204,7 +205,6 @@ exports.updateCartItem = async (req, res) => {
       });
     }
 
-    // ✅ Check stock before updating quantity
     if (quantity > 0) {
       if (selectedVariant && selectedVariant.size) {
         const variant = product.variants.find(
@@ -229,7 +229,6 @@ exports.updateCartItem = async (req, res) => {
     }
 
     if (quantity <= 0) {
-      // Remove item
       cart.items.splice(itemIndex, 1);
     } else {
       cart.items[itemIndex].quantity = quantity;
@@ -268,9 +267,7 @@ exports.removeFromCart = async (req, res) => {
       });
     }
 
-    // ✅ Keep items that DON'T match criteria
     if (selectedVariant && selectedVariant.size) {
-      // Remove specific variant
       cart.items = cart.items.filter((item) => {
         const sameProduct = item.product.toString() === productId;
         const sameVariant =
@@ -279,7 +276,6 @@ exports.removeFromCart = async (req, res) => {
         return !(sameProduct && sameVariant);
       });
     } else {
-      // Remove all instances of this product (no variant specified)
       cart.items = cart.items.filter(
         (item) => item.product.toString() !== productId,
       );
@@ -344,7 +340,6 @@ exports.syncCart = async (req, res) => {
       cart = new Cart({ user: req.user.id, items: [] });
     }
 
-    // Merge items with variant support
     for (const localItem of items) {
       const existingIndex = cart.items.findIndex((item) => {
         const sameProduct = item.product.toString() === localItem.productId;
@@ -357,10 +352,8 @@ exports.syncCart = async (req, res) => {
       });
 
       if (existingIndex > -1) {
-        // If product exists, add quantities
         cart.items[existingIndex].quantity += localItem.quantity;
       } else {
-        // Add new item
         cart.items.push({
           product: localItem.productId,
           quantity: localItem.quantity,

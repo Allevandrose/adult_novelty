@@ -13,6 +13,7 @@ const productSchema = new mongoose.Schema(
       unique: true,
       lowercase: true,
       trim: true,
+      index: true, // ✅ Add index for slug lookups
     },
     description: {
       type: String,
@@ -22,16 +23,17 @@ const productSchema = new mongoose.Schema(
       type: Number,
       required: true,
       min: 0,
+      index: true, // ✅ Add index for price filtering
     },
     category: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Category",
       required: true,
+      index: true, // ✅ Add index for category filtering
     },
     images: [
       {
         type: String,
-        // ✅ NO VALIDATION - Accepts any string (local paths, Cloudinary URLs, external URLs)
       },
     ],
     variants: [
@@ -65,16 +67,40 @@ const productSchema = new mongoose.Schema(
     isActive: {
       type: Boolean,
       default: true,
+      index: true, // ✅ Add index for filtering
     },
     isFeatured: {
       type: Boolean,
       default: false,
+      index: true, // ✅ Add index for featured queries
     },
   },
   {
     timestamps: true,
   },
 );
+
+// ✅ ADD TEXT INDEX FOR SEARCH (IMPORTANT!)
+productSchema.index(
+  { name: "text", description: "text" },
+  {
+    weights: {
+      name: 10, // Name matches are more important
+      description: 5,
+    },
+    name: "product_search",
+  },
+);
+
+// ✅ Compound indexes for common queries
+productSchema.index({ category: 1, isActive: 1 });
+productSchema.index({ isActive: 1, price: 1 });
+productSchema.index({ isActive: 1, isFeatured: 1 });
+productSchema.index({ category: 1, isActive: 1, price: 1 });
+
+// ✅ Index for sorting
+productSchema.index({ createdAt: -1 });
+productSchema.index({ name: 1 });
 
 // Virtual for total stock
 productSchema.virtual("totalStock").get(function () {
@@ -108,17 +134,15 @@ productSchema.methods.getOptimizedImage = function (imageUrl, size = "medium") {
   return imageUrl;
 };
 
-// Add virtual for image optimization (updated to safely handle non-Cloudinary images)
+// Add virtual for image optimization
 productSchema.virtual("optimizedImages").get(function () {
   if (!this.images || this.images.length === 0) return [];
 
   return this.images.map((url) => {
-    // If it's a local path or an external URL, just return it as original
     if (!url || !url.includes("cloudinary.com")) {
       return { original: url };
     }
 
-    // Add transformations for different sizes ONLY if it is a Cloudinary URL
     const baseUrl = url.split("/upload/");
     if (baseUrl.length === 2) {
       return {

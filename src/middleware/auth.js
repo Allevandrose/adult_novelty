@@ -48,14 +48,19 @@ const auth = async (req, res, next) => {
     try {
       const cachedUser = await getCache(`user:${decoded.id}`);
       if (cachedUser) {
-        req.user = cachedUser;
+        // ✅ FIX: Ensure both id and _id are set
+        req.user = {
+          ...cachedUser,
+          id: cachedUser._id || cachedUser.id || decoded.id,
+          _id: cachedUser._id || cachedUser.id || decoded.id,
+        };
         return next();
       }
     } catch (cacheError) {
       logger.debug("Cache miss or error:", cacheError.message);
     }
 
-    // ✅ FIX: Use .lean() for read-only operations - this is fine
+    // Fallback to database
     const user = await User.findById(decoded.id)
       .select("-password -__v")
       .lean();
@@ -67,7 +72,11 @@ const auth = async (req, res, next) => {
       });
     }
 
-    req.user = user;
+    // ✅ FIX: Add 'id' field for compatibility
+    req.user = {
+      ...user,
+      id: user._id, // Add this for cart controller
+    };
     next();
   } catch (error) {
     logger.error("Auth error:", error.message);
