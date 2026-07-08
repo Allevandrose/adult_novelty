@@ -1,36 +1,81 @@
 services:
   - type: web
     name: adult-novelty-api
-    runtime: node
+    env: node                    # ← Changed from 'runtime' to 'env'
     plan: free
+    region: oregon               # ← Added region
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: npm start      # ← Good! npm start will run your server
     envVars:
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 5000
+        value: 10000             # ← Changed to 10000 (Render default)
+      
+      # MongoDB
       - key: MONGODB_URI
-        sync: false
+        sync: false              # ← You'll set this in Render dashboard
+      
+      # JWT
       - key: JWT_SECRET
         sync: false
+      - key: JWT_EXPIRE
+        value: 7d                # ← ADDED
       - key: JWT_REFRESH_SECRET
         sync: false
-      - key: PESAPAL_CONSUMER_KEY
-        sync: false
-      - key: PESAPAL_CONSUMER_SECRET
-        sync: false
-      - key: PESAPAL_IPN_URL
-        sync: false
+      - key: JWT_REFRESH_EXPIRE
+        value: 30d               # ← ADDED
+      
+      # Cloudinary
       - key: CLOUDINARY_CLOUD_NAME
         sync: false
       - key: CLOUDINARY_API_KEY
         sync: false
       - key: CLOUDINARY_API_SECRET
         sync: false
+      
+      # Email
+      - key: SMTP_HOST
+        value: smtp.gmail.com    # ← ADDED
+      - key: SMTP_PORT
+        value: 587               # ← ADDED
       - key: SMTP_USER
         sync: false
       - key: SMTP_PASS
         sync: false
+      - key: SMTP_FROM
+        sync: false              # ← ADDED
+      
+      # URLs
+      - key: BACKEND_URL
+        sync: false              # ← ADDED
       - key: FRONTEND_URL
         sync: false
+      
+      # Admin
+      - key: ADMIN_EMAIL
+        value: admin@wellnessstore.co.ke   # ← ADDED
+      - key: ADMIN_PASSWORD
+        value: Admin@123                    # ← ADDED
+      
+      # Shipping
+      - key: SHIPPING_FEE
+        value: 250               # ← ADDED
+      - key: FREE_SHIPPING_THRESHOLD
+        value: 5000              # ← ADDED
+      
+      # IntaSend (if you're using it)
+      - key: INTASEND_PUBLISHABLE_KEY
+        sync: false              # ← ADDED
+      - key: INTASEND_SECRET_KEY
+        sync: false              # ← ADDED
+      - key: INTASEND_ENVIRONMENT
+        value: production        # ← ADDED
+      
+      # Remove PESAPAL if you're not using it
+      # - key: PESAPAL_CONSUMER_KEY
+      #   sync: false
+      # - key: PESAPAL_CONSUMER_SECRET
+      #   sync: false
+      # - key: PESAPAL_IPN_URL
+      #   sync: false
