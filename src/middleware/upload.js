@@ -1,23 +1,29 @@
 const multer = require("multer");
-const path = require("path");
-const fs = require("fs");
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const cloudinary = require("cloudinary").v2;
 
-// Ensure uploads directory exists
-const uploadDir = path.join(__dirname, "../../public/uploads/products");
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
+// Configure Cloudinary (if not already configured elsewhere)
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME || "gnxupkp2",
+  api_key: process.env.CLOUDINARY_API_KEY || "778938248943598",
+  api_secret:
+    process.env.CLOUDINARY_API_SECRET || "vm3Da002_qkziH-2_BNGAJElCKw",
+});
 
-// Configure multer storage
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    // Clean filename
-    const cleanName = file.originalname.replace(/[^a-zA-Z0-9.]/g, "_");
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
-    cb(null, "product-" + uniqueSuffix + path.extname(cleanName));
+// Configure Multer Storage for Cloudinary
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "adult-novelty/products",
+    allowed_formats: ["jpg", "jpeg", "png", "webp", "gif"],
+    transformation: [
+      { width: 800, height: 800, crop: "limit" },
+      { quality: "auto" },
+    ],
+    public_id: (req, file) => {
+      const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+      return `product-${uniqueSuffix}`;
+    },
   },
 });
 
@@ -64,6 +70,12 @@ const handleMulterError = (err, req, res, next) => {
       message: err.message,
     });
   }
+  if (err.message && err.message.includes("Invalid file type")) {
+    return res.status(400).json({
+      success: false,
+      message: err.message,
+    });
+  }
   next(err);
 };
 
@@ -80,4 +92,4 @@ const uploadMultiple = (req, res, next) => {
 // Single image upload
 const uploadSingle = upload.single("image");
 
-module.exports = { upload, uploadSingle, uploadMultiple };
+module.exports = { upload, uploadSingle, uploadMultiple, handleMulterError };

@@ -1,27 +1,20 @@
 const Product = require("../models/Product");
 const Category = require("../models/Category");
 const slugify = require("../utils/generateSlug");
-const fs = require("fs");
-const path = require("path");
+const CloudinaryService = require("../services/cloudinaryService");
 
-// Helper function to delete image files
-const deleteImageFiles = (imagePaths) => {
-  if (!imagePaths || !Array.isArray(imagePaths)) return;
+// Helper function to delete images from Cloudinary
+const deleteCloudinaryImages = async (imageUrls) => {
+  if (!imageUrls || !Array.isArray(imageUrls) || imageUrls.length === 0) {
+    return;
+  }
 
-  imagePaths.forEach((imgPath) => {
-    try {
-      // Remove leading slash if present
-      const cleanPath = imgPath.startsWith("/") ? imgPath.slice(1) : imgPath;
-      const fullPath = path.join(__dirname, "../../public", cleanPath);
-
-      if (fs.existsSync(fullPath)) {
-        fs.unlinkSync(fullPath);
-        console.log(`Deleted image: ${fullPath}`);
-      }
-    } catch (e) {
-      console.error(`Failed to delete image ${imgPath}:`, e.message);
-    }
-  });
+  try {
+    const results = await CloudinaryService.deleteImages(imageUrls);
+    console.log("Cloudinary delete results:", results);
+  } catch (error) {
+    console.error("Error deleting from Cloudinary:", error);
+  }
 };
 
 // Get all products (public) with filtering
@@ -129,9 +122,7 @@ const createProduct = async (req, res) => {
     if (!name || !description || !price || !category) {
       // Clean up uploaded files if validation fails
       if (req.files) {
-        deleteImageFiles(
-          req.files.map((f) => `/uploads/products/${f.filename}`),
-        );
+        await deleteCloudinaryImages(req.files.map((f) => f.path));
       }
       return res.status(400).json({
         success: false,
@@ -143,9 +134,7 @@ const createProduct = async (req, res) => {
     if (!categoryExists) {
       // Clean up uploaded files
       if (req.files) {
-        deleteImageFiles(
-          req.files.map((f) => `/uploads/products/${f.filename}`),
-        );
+        await deleteCloudinaryImages(req.files.map((f) => f.path));
       }
       return res.status(400).json({
         success: false,
@@ -158,9 +147,7 @@ const createProduct = async (req, res) => {
     if (exists) {
       // Clean up uploaded files
       if (req.files) {
-        deleteImageFiles(
-          req.files.map((f) => `/uploads/products/${f.filename}`),
-        );
+        await deleteCloudinaryImages(req.files.map((f) => f.path));
       }
       return res.status(400).json({
         success: false,
@@ -168,12 +155,10 @@ const createProduct = async (req, res) => {
       });
     }
 
-    // Get uploaded image URLs
+    // Get uploaded image URLs from Cloudinary
     let imageUrls = [];
     if (req.files && req.files.length > 0) {
-      imageUrls = req.files.map((file) => {
-        return `/uploads/products/${file.filename}`;
-      });
+      imageUrls = req.files.map((file) => file.path); // Cloudinary returns path as the URL
     }
 
     // Parse variants if sent as string
@@ -222,7 +207,7 @@ const createProduct = async (req, res) => {
     console.error("Create product error:", error);
     // Clean up uploaded files on error
     if (req.files) {
-      deleteImageFiles(req.files.map((f) => `/uploads/products/${f.filename}`));
+      await deleteCloudinaryImages(req.files.map((f) => f.path));
     }
     res.status(500).json({
       success: false,
@@ -271,20 +256,18 @@ const updateProduct = async (req, res) => {
       }
     }
 
-    // Remove images from array and delete files
+    // Remove images from Cloudinary and array
     if (imagesToRemove && imagesToRemove.length > 0) {
-      // Delete files from server
-      deleteImageFiles(imagesToRemove);
+      // Delete files from Cloudinary
+      await deleteCloudinaryImages(imagesToRemove);
 
       // Remove from imageUrls array
       imageUrls = imageUrls.filter((img) => !imagesToRemove.includes(img));
     }
 
-    // Add new images
+    // Add new images from Cloudinary
     if (req.files && req.files.length > 0) {
-      const newImages = req.files.map(
-        (file) => `/uploads/products/${file.filename}`,
-      );
+      const newImages = req.files.map((file) => file.path);
       imageUrls = [...imageUrls, ...newImages];
     }
 
@@ -352,7 +335,7 @@ const updateProduct = async (req, res) => {
     console.error("Update product error:", error);
     // Clean up newly uploaded files on error
     if (req.files) {
-      deleteImageFiles(req.files.map((f) => `/uploads/products/${f.filename}`));
+      await deleteCloudinaryImages(req.files.map((f) => f.path));
     }
     res.status(500).json({
       success: false,
@@ -373,9 +356,9 @@ const deleteProduct = async (req, res) => {
       });
     }
 
-    // Delete associated images from server
+    // Delete associated images from Cloudinary
     if (product.images && product.images.length > 0) {
-      deleteImageFiles(product.images);
+      await deleteCloudinaryImages(product.images);
     }
 
     // Hard delete from database
