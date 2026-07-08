@@ -49,6 +49,7 @@ const createOrder = async (req, res) => {
 
     for (const item of items) {
       console.log(`🔍 Looking for product: ${item.productId}`);
+      console.log("📦 Item data:", JSON.stringify(item, null, 2));
 
       // ✅ Check if productId exists
       if (!item.productId) {
@@ -69,12 +70,21 @@ const createOrder = async (req, res) => {
       }
 
       console.log(`✅ Product found: ${product.name}`);
+      console.log(
+        `📋 Product variants:`,
+        JSON.stringify(product.variants, null, 2),
+      );
 
       // ✅ Check if variant has actual values
       const hasValidVariant =
         item.selectedVariant?.size || item.selectedVariant?.color;
 
       if (hasValidVariant) {
+        console.log(`🔍 Looking for variant:`, {
+          size: item.selectedVariant.size,
+          color: item.selectedVariant.color,
+        });
+
         // Find the specific variant
         const variant = product.variants.find(
           (v) =>
@@ -83,6 +93,15 @@ const createOrder = async (req, res) => {
         );
 
         if (!variant) {
+          console.log(`❌ Variant not found:`, {
+            size: item.selectedVariant.size,
+            color: item.selectedVariant.color,
+            availableVariants: product.variants.map((v) => ({
+              size: v.size,
+              color: v.color,
+            })),
+          });
+
           return res.status(400).json({
             success: false,
             message: `Variant not found for ${product.name} - ${item.selectedVariant.color} ${item.selectedVariant.size}`,
@@ -231,8 +250,6 @@ const createOrder = async (req, res) => {
     });
   }
 };
-
-// ... (rest of the controller functions remain unchanged)
 
 const getMyOrders = async (req, res) => {
   try {
