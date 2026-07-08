@@ -12,24 +12,27 @@ class IntaSendService {
       environment: this.isTest ? "test" : "production",
     });
 
-    // ✅ FIX: Initialize IntaSend with correct parameters
-    if (this.publishableKey && this.secretKey) {
-      this.intasend = new IntaSend(
-        this.publishableKey,
-        this.secretKey,
-        this.isTest,
-      );
-      this.collection = this.intasend.collection();
-      console.log("✅ IntaSend initialized successfully");
-    } else {
-      console.error("❌ IntaSend: Missing API keys");
+    try {
+      if (this.publishableKey && this.secretKey) {
+        this.intasend = new IntaSend(
+          this.publishableKey,
+          this.secretKey,
+          this.isTest,
+        );
+        this.collection = this.intasend.collection();
+        console.log("✅ IntaSend initialized successfully");
+      } else {
+        console.error("❌ IntaSend: Missing API keys");
+      }
+    } catch (error) {
+      console.error("❌ IntaSend initialization error:", error.message);
     }
   }
 
   async createCheckout(orderData) {
     try {
       if (!this.collection) {
-        throw new Error("IntaSend not initialized");
+        throw new Error("IntaSend not initialized - check your API keys");
       }
 
       const paymentData = {
@@ -39,7 +42,7 @@ class IntaSendService {
         phone_number: orderData.phoneNumber,
         amount: orderData.amount,
         currency: "KES",
-        api_ref: orderData.orderId, // This is the order number
+        api_ref: orderData.orderId,
         host: process.env.FRONTEND_URL || "http://localhost:5173",
         redirect_url: `${process.env.FRONTEND_URL || "http://localhost:5173"}/checkout/success?order=${orderData.orderId}`,
       };
@@ -47,14 +50,12 @@ class IntaSendService {
       console.log("📤 Sending to IntaSend:", {
         ...paymentData,
         // Mask sensitive data
-        email: paymentData.email,
-        phone: paymentData.phone_number,
+        phone_number: paymentData.phone_number ? "***" : undefined,
       });
 
       const response = await this.collection.charge(paymentData);
       console.log("📥 IntaSend Response:", response);
 
-      // ✅ Extract invoice_id from response
       const invoiceId = response.invoice_id || response.invoice?.id;
 
       return {
@@ -65,6 +66,8 @@ class IntaSendService {
       };
     } catch (error) {
       console.error("❌ IntaSend checkout error:", error);
+      console.error("❌ Error details:", error.response?.data || error.message);
+
       return {
         success: false,
         message: error.message || "Payment initialization failed",
@@ -85,7 +88,6 @@ class IntaSendService {
         JSON.stringify(response, null, 2),
       );
 
-      // ✅ Handle different response formats
       const state =
         response.invoice?.state ||
         response.state ||

@@ -30,13 +30,12 @@ const initializeTransporter = () => {
       tls: {
         rejectUnauthorized: process.env.NODE_ENV === "production",
       },
-      // ✅ Add timeouts to prevent hanging
       connectionTimeout: 5000,
       greetingTimeout: 5000,
       socketTimeout: 5000,
     });
 
-    // Verify connection asynchronously
+    // Don't await verification - let it happen in background
     transporter.verify((error, success) => {
       if (error) {
         logger.error("❌ Email transporter error:", error.message);
@@ -55,17 +54,15 @@ const initializeTransporter = () => {
   }
 };
 
-// ✅ FIXED: sendEmail with proper error handling
+// ✅ FIX: Don't throw errors - return failure object
 exports.sendEmail = async ({ to, subject, html, text }) => {
   try {
-    // Skip if no email provided
     if (!to) {
-      logger.warn("⚠️ No email recipient provided, skipping email");
+      logger.warn("⚠️ No email recipient provided");
       return { success: false, message: "No email recipient" };
     }
 
     logger.info(`📧 Sending email to: ${to}`);
-    logger.debug(`📧 Subject: ${subject}`);
 
     const transporter = initializeTransporter();
 
@@ -84,11 +81,9 @@ exports.sendEmail = async ({ to, subject, html, text }) => {
 
     const info = await transporter.sendMail(mailOptions);
     logger.info(`✅ Email sent successfully to: ${to}`);
-    logger.debug(`✅ Message ID: ${info.messageId}`);
-
     return { success: true, messageId: info.messageId };
   } catch (error) {
-    // ✅ Don't throw - return failure object instead
+    // ✅ DON'T THROW - just log and return failure
     logger.error(`❌ Email send error to ${to}:`, error.message);
     return { success: false, message: error.message };
   }

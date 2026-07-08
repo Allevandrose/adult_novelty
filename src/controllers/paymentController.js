@@ -7,6 +7,8 @@ const initiatePayment = async (req, res) => {
   try {
     const { orderId } = req.body;
 
+    console.log("📤 Payment initiation request for order:", orderId);
+
     if (!orderId) {
       return res.status(400).json({
         success: false,
@@ -22,6 +24,8 @@ const initiatePayment = async (req, res) => {
         message: "Order not found",
       });
     }
+
+    console.log("📦 Order found:", order.orderNumber);
 
     if (order.user._id.toString() !== req.user.id) {
       return res.status(403).json({
@@ -47,26 +51,32 @@ const initiatePayment = async (req, res) => {
       lastName: "User",
     };
 
-    console.log("📤 Initiating payment for order:", paymentData);
+    console.log("📤 Sending to IntaSend:", paymentData);
 
+    // ✅ Call IntaSend
     const result = await intaSendService.createCheckout(paymentData);
 
     if (!result.success) {
       console.error("❌ Payment initiation failed:", result.message);
+      console.error("❌ Error details:", result.error);
       return res.status(500).json({
         success: false,
         message: result.message || "Failed to initiate payment",
+        details:
+          process.env.NODE_ENV === "development" ? result.error : undefined,
       });
     }
 
-    // ✅ Save payment info - using generic field names instead of pesapal-specific
+    // ✅ Save payment info
     order.payment = {
       method: "mpesa",
-      intasendInvoiceId: result.invoiceId, // ✅ Renamed from pesapalOrderId
+      intasendInvoiceId: result.invoiceId,
       paymentStatus: "pending",
       redirectUrl: result.url,
     };
     await order.save();
+
+    console.log("✅ Payment initiated:", result.invoiceId);
 
     res.json({
       success: true,
@@ -79,6 +89,7 @@ const initiatePayment = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Initiate payment error:", error);
+    console.error("❌ Stack:", error.stack);
     res.status(500).json({
       success: false,
       message: error.message || "Server error",
@@ -90,77 +101,52 @@ const initiatePayment = async (req, res) => {
 const handleWebhook = async (req, res) => {
   try {
     console.log("📥 Webhook received:");
-    console.log("Headers:", JSON.stringify(req.headers, null, 2));
     console.log("Body:", JSON.stringify(req.body, null, 2));
 
-    const { invoice_id, state, api_ref, challenge, status } = req.body;
+    const { invoice_id, state, api_ref, challenge } = req.body;
 
-    // ✅ Handle webhook challenge
     if (challenge) {
       console.log("🔑 Webhook challenge received:", challenge);
       return res.status(200).json({ challenge });
     }
 
-    // ✅ Respond immediately to prevent timeout
+    // ✅ Respond immediately
     res.status(200).send("OK");
 
-    // ✅ Extract identifiers
-    const invoiceId = invoice_id || req.body.invoice?.id;
-    const orderRef = api_ref || req.body.api_ref || req.body.orderId;
-
-    if (!invoiceId || !orderRef) {
-      console.error("❌ Missing invoice_id or api_ref:", {
-        invoiceId,
-        orderRef,
-      });
+    if (!invoice_id || !api_ref) {
+      console.error("❌ Missing invoice_id or api_ref");
       return;
     }
 
-    console.log(`📦 Processing: invoice=${invoiceId}, api_ref=${orderRef}`);
+    console.log(`📦 Processing: invoice=${invoice_id}, api_ref=${api_ref}`);
 
-    // ✅ Find order by orderNumber
-    const order = await Order.findOne({ orderNumber: orderRef }).populate(
-      "user",
-      "email phone",
-    );
+    const order = await Order.findOne({ orderNumber: api_ref });
 
     if (!order) {
-      console.error(`❌ Order not found: ${orderRef}`);
+      console.error(`❌ Order not found: ${api_ref}`);
       return;
     }
-
-    console.log(
-      `📦 Order found: ${order.orderNumber}, Status: ${order.status}`,
-    );
 
     if (order.status === "paid") {
-      console.log(`⏭️ Order already paid: ${orderRef}`);
+      console.log(`⏭️ Order already paid: ${api_ref}`);
       return;
     }
 
-    // ✅ Verify payment status with IntaSend
-    const statusCheck = await intaSendService.checkStatus(invoiceId);
+    // ✅ Verify with IntaSend
+    const statusCheck = await intaSendService.checkStatus(invoice_id);
 
     if (!statusCheck.success) {
       console.error("❌ Status check failed:", statusCheck.message);
       return;
     }
 
-    console.log(
-      `🔍 Payment status: ${statusCheck.status}, Complete: ${statusCheck.isComplete}`,
-    );
+    console.log(`🔍 Payment status: ${statusCheck.status}`);
 
-    // ✅ Check if payment is complete
     if (statusCheck.isComplete) {
-      // ✅ Update order status to paid
       order.status = "paid";
-
       if (!order.payment) order.payment = {};
-      order.payment.method = "mpesa";
-      order.payment.intasendInvoiceId = invoiceId; // ✅ Renamed
       order.payment.paymentStatus = "completed";
       order.payment.paidAt = new Date();
-
       order.timeline.push({
         status: "paid",
         note: "Payment confirmed via IntaSend",
@@ -168,85 +154,16 @@ const handleWebhook = async (req, res) => {
       });
 
       await order.save();
-
       console.log(`✅✅✅ Order ${order.orderNumber} marked as PAID!`);
-
-      // ✅ Send email notification
-      try {
-        await sendEmail({
-          to: order.user.email,
-          subject: `Order Confirmation - ${order.orderNumber}`,
-          html: `
-            <!DOCTYPE html>
-            <html>
-              <head>
-                <style>
-                  body { font-family: Arial, sans-serif; background: #F7F3EA; padding: 40px 20px; }
-                  .container { max-width: 500px; margin: 0 auto; background: white; padding: 40px; border: 1px solid #E6DFD1; }
-                  .header { text-align: center; border-bottom: 1px solid #E6DFD1; padding-bottom: 20px; margin-bottom: 30px; }
-                  .logo { font-family: Georgia, serif; font-size: 24px; color: #14120F; }
-                  .order-number { background: #FBF9F4; padding: 15px; font-size: 14px; color: #5C5348; margin: 20px 0; border-left: 3px solid #B08D4F; }
-                  .button { display: inline-block; background: #14120F; color: #F7F3EA; padding: 12px 40px; text-decoration: none; letter-spacing: 0.15em; text-transform: uppercase; font-size: 12px; border: none; cursor: pointer; }
-                  .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #E6DFD1; text-align: center; font-size: 12px; color: #8C7B6B; }
-                </style>
-              </head>
-              <body>
-                <div class="container">
-                  <div class="header">
-                    <div class="logo">IntimaCare</div>
-                  </div>
-                  
-                  <h2 style="font-family: Georgia, serif; font-weight: 300; color: #14120F; margin-bottom: 10px;">
-                    Payment Successful! ✅
-                  </h2>
-                  
-                  <p style="color: #5C5348; line-height: 1.6; margin-bottom: 25px;">
-                    Thank you for your order. Your payment has been confirmed successfully.
-                  </p>
-                  
-                  <div class="order-number">
-                    <strong>Order Number:</strong> ${order.orderNumber}
-                  </div>
-                  
-                  <p style="color: #5C5348; font-size: 14px; margin-top: 20px;">
-                    <strong>Total Amount:</strong> KES ${order.totalAmount}
-                  </p>
-                  
-                  <div style="text-align: center; margin: 30px 0;">
-                    <a href="${process.env.FRONTEND_URL}/orders/${order._id}" class="button">
-                      View Order Details
-                    </a>
-                  </div>
-                  
-                  <div class="footer">
-                    <p>© ${new Date().getFullYear()} IntimaCare. All rights reserved.</p>
-                    <p style="margin-top: 10px;">Discreet packaging • Secure payment</p>
-                  </div>
-                </div>
-              </body>
-            </html>
-          `,
-        });
-        console.log(`📧 Order confirmation email sent to: ${order.user.email}`);
-      } catch (emailError) {
-        console.error(
-          "❌ Failed to send confirmation email:",
-          emailError.message,
-        );
-      }
-    } else {
-      console.log(`⚠️ Payment not complete: ${statusCheck.status}`);
     }
   } catch (error) {
     console.error("❌ Webhook error:", error);
   }
 };
 
-// Check payment status
 const checkPaymentStatus = async (req, res) => {
   try {
     const { orderId } = req.params;
-
     const order = await Order.findById(orderId);
     if (!order) {
       return res.status(404).json({
@@ -258,11 +175,9 @@ const checkPaymentStatus = async (req, res) => {
     res.json({
       success: true,
       data: {
-        orderNumber: order.orderNumber,
         status: order.status,
         paymentStatus: order.payment?.paymentStatus || "pending",
         paidAt: order.payment?.paidAt || null,
-        isPaid: order.status === "paid",
       },
     });
   } catch (error) {
