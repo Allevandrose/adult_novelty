@@ -42,7 +42,7 @@ router.post(
   authController.resetPassword,
 );
 
-// ✅ NEW: Refresh token route
+// Refresh token route
 router.post("/refresh-token", authController.refreshToken);
 
 // Protected routes
@@ -55,7 +55,7 @@ router.put(
   authController.updateProfile,
 );
 
-// ✅ NEW: Logout route
+// Logout route
 router.post("/logout", auth, authController.logout);
 
 module.exports = router;

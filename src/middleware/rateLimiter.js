@@ -1,10 +1,10 @@
 const rateLimit = require("express-rate-limit");
 const logger = require("../utils/logger");
 
-// ✅ NEW: Stricter rate limiter for authentication routes
+// Stricter rate limiter for authentication routes
 const authRateLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // 1000 attempts per window
+  max: 100, // 100 attempts per window
   message: {
     success: false,
     message:
@@ -15,11 +15,14 @@ const authRateLimiter = rateLimit({
   skipSuccessfulRequests: true, // Don't count successful logins
   handler: (req, res, next, options) => {
     logger.warn(`Rate limit exceeded for IP: ${req.ip} on ${req.path}`);
-    res.status(options.statusCode).json(options.message);
+    res.status(429).json({
+      success: false,
+      message: options.message.message,
+    });
   },
 });
 
-// ✅ NEW: Rate limiter for password reset
+// Rate limiter for password reset
 const passwordResetLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 3, // 3 reset requests per hour
@@ -33,11 +36,14 @@ const passwordResetLimiter = rateLimit({
     logger.warn(
       `Password reset rate limit exceeded for IP: ${req.ip} for email: ${req.body.email}`,
     );
-    res.status(options.statusCode).json(options.message);
+    res.status(429).json({
+      success: false,
+      message: options.message.message,
+    });
   },
 });
 
-// ✅ NEW: Rate limiter for registration
+// Rate limiter for registration
 const registerRateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
   max: 5, // 5 registrations per hour per IP
@@ -49,7 +55,10 @@ const registerRateLimiter = rateLimit({
   legacyHeaders: false,
   handler: (req, res, next, options) => {
     logger.warn(`Registration rate limit exceeded for IP: ${req.ip}`);
-    res.status(options.statusCode).json(options.message);
+    res.status(429).json({
+      success: false,
+      message: options.message.message,
+    });
   },
 });
 

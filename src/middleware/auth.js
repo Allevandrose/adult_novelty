@@ -17,7 +17,16 @@ try {
 
 const auth = async (req, res, next) => {
   try {
-    const token = req.headers.authorization?.split(" ")[1];
+    // Get token from header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({
+        success: false,
+        message: "Not authorized, no token provided",
+      });
+    }
+
+    const token = authHeader.split(" ")[1];
 
     if (!token) {
       return res.status(401).json({
@@ -48,7 +57,6 @@ const auth = async (req, res, next) => {
     try {
       const cachedUser = await getCache(`user:${decoded.id}`);
       if (cachedUser) {
-        // ✅ FIX: Ensure both id and _id are set
         req.user = {
           ...cachedUser,
           id: cachedUser._id || cachedUser.id || decoded.id,
@@ -72,14 +80,14 @@ const auth = async (req, res, next) => {
       });
     }
 
-    // ✅ FIX: Add 'id' field for compatibility
+    // Add 'id' field for compatibility
     req.user = {
       ...user,
-      id: user._id, // Add this for cart controller
+      id: user._id,
     };
     next();
   } catch (error) {
-    logger.error("Auth error:", error.message);
+    logger.error("Auth middleware error:", error);
     res.status(401).json({
       success: false,
       message: "Not authorized",

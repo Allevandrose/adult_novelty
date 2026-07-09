@@ -30,36 +30,51 @@ exports.register = async (req, res) => {
   try {
     const { email, phone, password } = req.body;
 
-    const userExists = await User.findOne({ $or: [{ email }, { phone }] })
+    // Check if user already exists
+    const userExists = await User.findOne({
+      $or: [{ email }, { phone }],
+    })
       .select("_id email phone")
       .lean();
 
     if (userExists) {
+      const existingField = userExists.email === email ? "email" : "phone";
       return res.status(400).json({
         success: false,
-        message: "User already exists with this email or phone",
+        message: `An account with this ${existingField} already exists`,
+        field: existingField,
       });
     }
 
+    // Create user
     const user = await User.create({
       email,
       phone,
       password,
     });
 
+    // Generate tokens
     const token = generateToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
+    // Prepare user data for response
     const userData = {
       _id: user._id,
       email: user.email,
       phone: user.phone,
       role: user.role,
     };
-    await setCache(`user:${user._id}`, userData, 3600);
+
+    // Cache user data (non-blocking)
+    try {
+      await setCache(`user:${user._id}`, userData, 3600);
+    } catch (cacheError) {
+      logger.warn("Failed to cache user data:", cacheError.message);
+    }
 
     res.status(201).json({
       success: true,
+      message: "Account created successfully",
       data: {
         ...userData,
         token,
@@ -68,9 +83,30 @@ exports.register = async (req, res) => {
     });
   } catch (error) {
     logger.error("Register error:", error);
+
+    // Handle mongoose validation errors
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((err) => err.message);
+      return res.status(400).json({
+        success: false,
+        message: messages[0] || "Validation error",
+        errors: messages,
+      });
+    }
+
+    // Handle duplicate key errors
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyValue)[0];
+      return res.status(400).json({
+        success: false,
+        message: `An account with this ${field} already exists`,
+        field,
+      });
+    }
+
     res.status(500).json({
       success: false,
-      message: "Server error during registration",
+      message: "An error occurred during registration. Please try again.",
     });
   }
 };
@@ -82,7 +118,7 @@ exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // ✅ FIX: Removed .lean() to allow instance methods like comparePassword()
+    // Find user with password field
     const user = await User.findOne({ email }).select(
       "+password +loginAttempts +lockUntil",
     );
@@ -90,7 +126,7 @@ exports.login = async (req, res) => {
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: "Invalid credentials",
+        message: "Invalid email or password",
       });
     }
 
@@ -100,18 +136,23 @@ exports.login = async (req, res) => {
       return res.status(403).json({
         success: false,
         message: `Account locked. Please try again in ${remainingTime} minutes.`,
+        lockedUntil: user.lockUntil,
       });
     }
 
-    // Check password - works because user is a Mongoose document
+    // Check password
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
       // Increment login attempts
       await user.incrementLoginAttempts();
 
+      const attemptsLeft = 5 - (user.loginAttempts + 1);
       return res.status(401).json({
         success: false,
-        message: "Invalid credentials",
+        message:
+          attemptsLeft > 0
+            ? `Invalid email or password. ${attemptsLeft} attempts remaining.`
+            : "Invalid email or password",
       });
     }
 
@@ -125,18 +166,25 @@ exports.login = async (req, res) => {
     const token = generateToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
-    // Cache user session
+    // Prepare user data
     const userData = {
       _id: user._id,
       email: user.email,
       phone: user.phone,
       role: user.role,
     };
-    await setCache(`user:${user._id}`, userData, 3600);
-    await setCache(`session:${user._id}`, { token, refreshToken }, 3600);
+
+    // Cache user session (non-blocking)
+    try {
+      await setCache(`user:${user._id}`, userData, 3600);
+      await setCache(`session:${user._id}`, { token, refreshToken }, 3600);
+    } catch (cacheError) {
+      logger.warn("Failed to cache session:", cacheError.message);
+    }
 
     res.json({
       success: true,
+      message: "Login successful",
       data: {
         ...userData,
         token,
@@ -147,7 +195,7 @@ exports.login = async (req, res) => {
     logger.error("Login error:", error);
     res.status(500).json({
       success: false,
-      message: "Server error during login",
+      message: "An error occurred during login. Please try again.",
     });
   }
 };
@@ -182,11 +230,15 @@ exports.refreshToken = async (req, res) => {
     const newToken = generateToken(user._id);
     const newRefreshToken = generateRefreshToken(user._id);
 
-    await setCache(
-      `session:${user._id}`,
-      { token: newToken, refreshToken: newRefreshToken },
-      3600,
-    );
+    try {
+      await setCache(
+        `session:${user._id}`,
+        { token: newToken, refreshToken: newRefreshToken },
+        3600,
+      );
+    } catch (cacheError) {
+      logger.warn("Failed to cache refresh token:", cacheError.message);
+    }
 
     res.json({
       success: true,
@@ -209,13 +261,18 @@ exports.refreshToken = async (req, res) => {
 // @access  Private
 exports.getMe = async (req, res) => {
   try {
-    const cachedUser = await getCache(`user:${req.user.id}`);
-    if (cachedUser) {
-      return res.json({
-        success: true,
-        data: cachedUser,
-        fromCache: true,
-      });
+    // Try cache first
+    try {
+      const cachedUser = await getCache(`user:${req.user.id}`);
+      if (cachedUser) {
+        return res.json({
+          success: true,
+          data: cachedUser,
+          fromCache: true,
+        });
+      }
+    } catch (cacheError) {
+      logger.debug("Cache miss for user:", cacheError.message);
     }
 
     const user = await User.findById(req.user.id)
@@ -229,7 +286,12 @@ exports.getMe = async (req, res) => {
       });
     }
 
-    await setCache(`user:${req.user.id}`, user, 3600);
+    // Cache user data
+    try {
+      await setCache(`user:${req.user.id}`, user, 3600);
+    } catch (cacheError) {
+      logger.warn("Failed to cache user:", cacheError.message);
+    }
 
     res.json({
       success: true,
@@ -240,7 +302,7 @@ exports.getMe = async (req, res) => {
     logger.error("Get profile error:", error);
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Error fetching profile",
     });
   }
 };
@@ -251,7 +313,6 @@ exports.getMe = async (req, res) => {
 exports.updateProfile = async (req, res) => {
   try {
     const { email, phone } = req.body;
-
     const updateData = {};
 
     if (email) {
@@ -294,17 +355,23 @@ exports.updateProfile = async (req, res) => {
       runValidators: true,
     }).select("-password -__v");
 
-    await deleteCache(`user:${req.user.id}`);
+    // Clear cache
+    try {
+      await deleteCache(`user:${req.user.id}`);
+    } catch (cacheError) {
+      logger.warn("Failed to clear cache:", cacheError.message);
+    }
 
     res.json({
       success: true,
+      message: "Profile updated successfully",
       data: user,
     });
   } catch (error) {
     logger.error("Update profile error:", error);
     res.status(500).json({
       success: false,
-      message: "Server error",
+      message: "Error updating profile",
     });
   }
 };
@@ -318,6 +385,7 @@ exports.forgotPassword = async (req, res) => {
 
     const user = await User.findOne({ email });
     if (!user) {
+      // Return same message for security
       return res.json({
         success: true,
         message: "If a user exists with this email, a reset link will be sent",
@@ -325,27 +393,43 @@ exports.forgotPassword = async (req, res) => {
     }
 
     const resetToken = crypto.randomBytes(32).toString("hex");
-
     const hashedToken = crypto
       .createHash("sha256")
       .update(resetToken)
       .digest("hex");
+
     user.resetPasswordToken = hashedToken;
-    user.resetPasswordExpires = Date.now() + 3600000;
+    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
 
     await user.save();
 
-    const resetUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/reset-password/${resetToken}`;
+    const resetUrl = `${
+      process.env.FRONTEND_URL || "http://localhost:5173"
+    }/reset-password/${resetToken}`;
 
+    // Send email asynchronously
     setImmediate(async () => {
       try {
         await sendEmail({
           to: user.email,
           subject: "Password Reset Request - IntimaCare",
-          html: `<h1>Reset Your Password</h1><p>Click <a href="${resetUrl}">here</a> to reset your password.</p>`,
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h1 style="color: #B08D4F;">Reset Your Password</h1>
+              <p>You requested a password reset for your IntimaCare account.</p>
+              <p>Click the button below to reset your password. This link expires in 1 hour.</p>
+              <a href="${resetUrl}" 
+                 style="display: inline-block; padding: 12px 24px; background-color: #B08D4F; color: white; text-decoration: none; border-radius: 4px;">
+                Reset Password
+              </a>
+              <p style="margin-top: 20px; font-size: 14px; color: #666;">
+                If you didn't request this, please ignore this email.
+              </p>
+            </div>
+          `,
         });
       } catch (emailError) {
-        logger.error(`Failed to send email:`, emailError);
+        logger.error(`Failed to send password reset email:`, emailError);
       }
     });
 
@@ -392,12 +476,18 @@ exports.resetPassword = async (req, res) => {
 
     await user.save();
 
-    await deleteCache(`user:${user._id}`);
-    await deleteCache(`session:${user._id}`);
+    // Clear all user sessions
+    try {
+      await deleteCache(`user:${user._id}`);
+      await deleteCache(`session:${user._id}`);
+    } catch (cacheError) {
+      logger.warn("Failed to clear cache:", cacheError.message);
+    }
 
     res.json({
       success: true,
-      message: "Password reset successfully",
+      message:
+        "Password reset successfully. Please login with your new password.",
     });
   } catch (error) {
     logger.error("Reset password error:", error);
@@ -413,7 +503,11 @@ exports.resetPassword = async (req, res) => {
 // @access  Private
 exports.logout = async (req, res) => {
   try {
-    await deleteCache(`session:${req.user.id}`);
+    try {
+      await deleteCache(`session:${req.user.id}`);
+    } catch (cacheError) {
+      logger.warn("Failed to clear session cache:", cacheError.message);
+    }
 
     res.json({
       success: true,

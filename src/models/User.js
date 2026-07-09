@@ -10,32 +10,31 @@ const userSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
       match: [/^\S+@\S+\.\S+$/, "Please provide a valid email"],
-      index: true, // ✅ FIX: Add index for faster lookups
+      index: true,
     },
     phone: {
       type: String,
       required: [true, "Phone number is required"],
       unique: true,
       trim: true,
-      index: true, // ✅ FIX: Add index for faster lookups
+      index: true,
     },
     password: {
       type: String,
       required: [true, "Password is required"],
       minlength: [8, "Password must be at least 8 characters"],
-      select: false, // ✅ FIX: Don't include by default in queries
+      select: false,
     },
     role: {
       type: String,
       enum: ["user", "admin"],
       default: "user",
-      index: true, // ✅ FIX: Index for role-based queries
+      index: true,
     },
-    // ✅ FIX: Remove telegramChatId - not used
     // Password reset fields
     resetPasswordToken: {
       type: String,
-      index: true, // ✅ FIX: Index for faster token lookups
+      index: true,
     },
     resetPasswordExpires: {
       type: Date,
@@ -51,7 +50,7 @@ const userSchema = new mongoose.Schema(
     emailVerificationExpires: {
       type: Date,
     },
-    // ✅ FIX: Add account lockout fields
+    // Account lockout fields
     loginAttempts: {
       type: Number,
       default: 0,
@@ -65,7 +64,7 @@ const userSchema = new mongoose.Schema(
   },
 );
 
-// ✅ FIX: Create compound index for common queries
+// Create compound indexes for common queries
 userSchema.index({ email: 1, role: 1 });
 userSchema.index({ phone: 1, role: 1 });
 userSchema.index({ resetPasswordToken: 1, resetPasswordExpires: 1 });
@@ -75,7 +74,6 @@ userSchema.pre("save", async function (next) {
   if (!this.isModified("password")) return next();
 
   try {
-    // ✅ FIX: Use 12 rounds for better security (still fast)
     this.password = await bcrypt.hash(this.password, 12);
     next();
   } catch (err) {
@@ -83,12 +81,12 @@ userSchema.pre("save", async function (next) {
   }
 });
 
-// ✅ FIX: Instance method to check if account is locked
+// Instance method to check if account is locked
 userSchema.methods.isLocked = function () {
   return this.lockUntil && this.lockUntil > Date.now();
 };
 
-// ✅ FIX: Instance method to increment login attempts
+// Instance method to increment login attempts
 userSchema.methods.incrementLoginAttempts = async function () {
   const MAX_LOGIN_ATTEMPTS = 5;
   const LOCK_TIME = 15 * 60 * 1000; // 15 minutes
@@ -110,7 +108,21 @@ userSchema.methods.incrementLoginAttempts = async function () {
 
 // Compare password method
 userSchema.methods.comparePassword = async function (candidatePassword) {
-  return await bcrypt.compare(candidatePassword, this.password);
+  try {
+    return await bcrypt.compare(candidatePassword, this.password);
+  } catch (error) {
+    throw new Error("Password comparison failed");
+  }
 };
 
-module.exports = mongoose.model("User", userSchema);
+// Remove password from JSON output
+userSchema.methods.toJSON = function () {
+  const obj = this.toObject();
+  delete obj.password;
+  delete obj.__v;
+  return obj;
+};
+
+const User = mongoose.model("User", userSchema);
+
+module.exports = User;

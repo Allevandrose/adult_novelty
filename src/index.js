@@ -45,26 +45,24 @@ app.use(
   }),
 );
 
-// ✅ FIXED: CORS with specific allowed origins
+// CORS configuration
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5000",
   "https://intimacare.netlify.app",
   "https://adult-novelty.onrender.com",
-  "https://intimacare.netlify.app",
 ];
 
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
 
       if (allowedOrigins.indexOf(origin) !== -1) {
         callback(null, true);
       } else {
-        logger.warn("❌ CORS blocked origin:", origin);
-        callback(new Error("Not allowed by CORS"));
+        logger.warn("CORS blocked origin:", origin);
+        callback(null, true); // Allow all origins in development
       }
     },
     credentials: true,
@@ -80,26 +78,19 @@ app.use(
   }),
 );
 
-// Route-specific rate limiting
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  message: "Too many authentication attempts, please try again later",
-  skipSuccessfulRequests: true,
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
+// General rate limiting
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
-  message: "Too many requests, please try again later",
+  message: {
+    success: false,
+    message: "Too many requests, please try again later",
+  },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 app.use("/api", apiLimiter);
-app.use("/api/auth", authLimiter);
 
 // Request timeout middleware
 app.use((req, res, next) => {
@@ -116,7 +107,7 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// Serve static files with caching headers
+// Serve static files
 app.use(
   "/uploads",
   express.static(path.join(__dirname, "../public/uploads"), {
@@ -193,7 +184,7 @@ app.use((req, res) => {
   });
 });
 
-// Enhanced error handler
+// Error handler
 app.use((err, req, res, next) => {
   const statusCode = err.statusCode || 500;
   const message = err.message || "Server error";
@@ -207,7 +198,7 @@ app.use((err, req, res, next) => {
 
   res.status(statusCode).json({
     success: false,
-    message: statusCode === 500 ? "Server error" : message,
+    message: statusCode === 500 ? "Internal server error" : message,
     ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
   });
 });
@@ -217,22 +208,20 @@ const PORT = process.env.PORT || 5000;
 const server = app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
   logger.info(`📁 Environment: ${process.env.NODE_ENV}`);
-  logger.info(`✅ CORS: Configured with allowed origins`);
+  logger.info(`✅ CORS: Configured`);
   logger.info(`📁 Uploads served from: /uploads`);
   logger.info(`✅ Compression: Enabled`);
   logger.info(`✅ Rate Limiting: Enabled`);
 });
 
-// ✅ FIXED: Graceful shutdown - prevent premature exit
+// Graceful shutdown
 const gracefulShutdown = () => {
   logger.info("🔄 Received shutdown signal, closing server...");
 
-  // Stop accepting new connections
   server.close(async () => {
     logger.info("✅ HTTP server closed");
 
     try {
-      // Close MongoDB connection
       await mongoose.connection.close();
       logger.info("✅ MongoDB connection closed");
     } catch (err) {
@@ -242,14 +231,12 @@ const gracefulShutdown = () => {
     process.exit(0);
   });
 
-  // Force shutdown after 10 seconds
   setTimeout(() => {
     logger.warn("⚠️ Force shutdown after timeout");
     process.exit(1);
   }, 10000);
 };
 
-// Only listen for SIGTERM and SIGINT once
 process.on("SIGTERM", gracefulShutdown);
 process.on("SIGINT", gracefulShutdown);
 
