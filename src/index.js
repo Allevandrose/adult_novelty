@@ -20,6 +20,9 @@ const adminRoutes = require("./routes/adminRoutes");
 
 const app = express();
 
+// --- FIX: Trust the proxy (Render) ---
+app.set("trust proxy", 1);
+
 // Connect to MongoDB
 connectDB();
 
