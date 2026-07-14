@@ -187,17 +187,26 @@ const handleWebhook = async (req, res) => {
     bodyType: typeof rawBody,
     isBuffer: Buffer.isBuffer(rawBody),
     bodyLength: rawBody ? rawBody.length : 0,
+    environment: process.env.NODE_ENV,
   });
 
-  // ✅ Verify webhook signature using raw body (Buffer)
-  const isValid = intaSendService.verifyWebhookSignature(rawBody, signature);
+  // ✅ DEVELOPMENT BACKDOOR (Only for testing)
+  // This bypasses signature verification when using Postman or testing locally
+  // ⚠️ WARNING: Never deploy this to production
+  if (process.env.NODE_ENV === "development" && signature === "test-bypass") {
+    logger.warn("⚠️⚠️⚠️ BYPASSING SIGNATURE VERIFICATION FOR TESTING ⚠️⚠️⚠️");
+    logger.warn("⚠️ This is a development backdoor - DO NOT USE IN PRODUCTION");
+  } else {
+    // ✅ Verify webhook signature using raw body (Buffer)
+    const isValid = intaSendService.verifyWebhookSignature(rawBody, signature);
 
-  if (!isValid) {
-    logger.warn("❌ Invalid webhook signature");
-    return res.status(403).json({
-      success: false,
-      message: "Invalid signature",
-    });
+    if (!isValid) {
+      logger.warn("❌ Invalid webhook signature");
+      return res.status(403).json({
+        success: false,
+        message: "Invalid signature",
+      });
+    }
   }
 
   // ✅ Parse the raw body Buffer to JSON object
