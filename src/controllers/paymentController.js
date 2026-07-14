@@ -1,3 +1,4 @@
+// controllers/paymentController.js
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const intaSendService = require("../services/intasendService");
@@ -115,11 +116,13 @@ const initiatePayment = async (req, res) => {
 
     // ✅ Save payment info to order
     order.payment = {
+      ...order.payment,
       method: paymentMethod === "mpesa" ? "mpesa" : "checkout",
       provider: "INTASEND",
       intasendInvoiceId: result.invoiceId,
       paymentStatus: "pending",
       redirectUrl: result.url || null,
+      processedEvents: order.payment?.processedEvents || [], // Preserve existing processed events
     };
 
     if (order.status === "pending") {
@@ -215,6 +218,7 @@ const handleWebhook = async (req, res) => {
     api_ref: parsedBody.api_ref,
     state: parsedBody.state,
     invoice_id: parsedBody.invoice_id,
+    event_id: parsedBody.event_id,
   });
 
   // Handle challenge verification (IntaSend sends this during webhook setup)
@@ -236,8 +240,9 @@ const handleWebhook = async (req, res) => {
 };
 
 /**
- * Internal helper: Process payment webhook data
+ * Internal helper: Process payment webhook data with idempotency
  * Updates order status based on payment state
+ * ✅ Uses processedEvents array to prevent duplicate processing
  */
 const processPaymentWebhook = async (data) => {
   try {
@@ -249,6 +254,7 @@ const processPaymentWebhook = async (data) => {
       failed_reason,
       value,
       currency,
+      event_id, // ✅ IntaSend event ID for idempotency
     } = data;
 
     if (!api_ref) {
@@ -264,12 +270,32 @@ const processPaymentWebhook = async (data) => {
       return;
     }
 
+    // ✅ IDEMPOTENCY CHECK: Skip if this specific event was already processed
+    if (event_id) {
+      // Ensure processedEvents array exists
+      if (!order.payment.processedEvents) {
+        order.payment.processedEvents = [];
+      }
+
+      if (order.payment.processedEvents.includes(event_id)) {
+        logger.info(
+          `ℹ️ Event ${event_id} already processed for order ${api_ref}`,
+        );
+        return;
+      }
+    }
+
     // Skip if already paid
     if (
       order.status === "paid" &&
       order.payment?.paymentStatus === "completed"
     ) {
       logger.info(`ℹ️ Order ${order.orderNumber} already paid, skipping`);
+      // Still mark event as processed if it exists
+      if (event_id && !order.payment.processedEvents.includes(event_id)) {
+        order.payment.processedEvents.push(event_id);
+        await order.save();
+      }
       return;
     }
 
@@ -277,50 +303,92 @@ const processPaymentWebhook = async (data) => {
       `🔄 Processing webhook for order ${order.orderNumber}: ${state}`,
     );
 
+    // ✅ Ensure payment object exists
+    if (!order.payment) {
+      order.payment = {};
+    }
+
     if (state === "COMPLETE" || state === "completed" || state === "success") {
       // ✅ Payment successful - Update order and deduct stock
       order.status = "paid";
       order.payment = {
-        ...order.payment.toObject(),
+        ...order.payment,
         provider: provider || "INTASEND",
         paymentStatus: "completed",
         paidAt: new Date(),
         amountPaid: value || order.totalAmount,
         currency: currency || "KES",
         intasendInvoiceId: invoice_id || order.payment?.intasendInvoiceId,
+        intasendTrackingId:
+          data.tracking_id || order.payment?.intasendTrackingId,
       };
 
       // ✅ Deduct stock from products
       await deductStock(order);
 
+      // ✅ Mark event as processed before saving
+      if (event_id && !order.payment.processedEvents.includes(event_id)) {
+        order.payment.processedEvents.push(event_id);
+      }
+
       await order.save();
       logger.info(
-        `✅✅✅ Order ${order.orderNumber} marked as PAID! Stock deducted.`,
+        `✅✅✅ Order ${order.orderNumber} marked as PAID! Stock deducted. Event: ${event_id || "N/A"}`,
       );
     } else if (state === "FAILED" || state === "failed") {
       // ✅ Payment failed
       order.status = "payment_failed";
       order.payment = {
-        ...order.payment.toObject(),
+        ...order.payment,
         provider: provider || "INTASEND",
         paymentStatus: "failed",
         failedReason: failed_reason || "Payment failed",
         intasendInvoiceId: invoice_id || order.payment?.intasendInvoiceId,
       };
 
+      // ✅ Mark event as processed before saving
+      if (event_id && !order.payment.processedEvents.includes(event_id)) {
+        order.payment.processedEvents.push(event_id);
+      }
+
       await order.save();
       logger.warn(
         `❌ Payment failed for order ${order.orderNumber}: ${failed_reason}`,
       );
-    } else {
-      // Other states (processing, pending, etc.)
-      logger.info(`ℹ️ Order ${order.orderNumber} payment status: ${state}`);
-      if (order.payment) {
-        order.payment.paymentStatus = state.toLowerCase();
-        order.payment.intasendInvoiceId =
-          invoice_id || order.payment.intasendInvoiceId;
-        await order.save();
+    } else if (state === "CANCELLED" || state === "cancelled") {
+      // ✅ Payment cancelled
+      order.payment = {
+        ...order.payment,
+        paymentStatus: "cancelled",
+        failedReason: "Payment cancelled by user",
+        intasendInvoiceId: invoice_id || order.payment?.intasendInvoiceId,
+      };
+
+      // ✅ Mark event as processed before saving
+      if (event_id && !order.payment.processedEvents.includes(event_id)) {
+        order.payment.processedEvents.push(event_id);
       }
+
+      await order.save();
+      logger.info(`ℹ️ Payment cancelled for order ${order.orderNumber}`);
+    } else {
+      // ✅ Other states (processing, pending, etc.)
+      logger.info(`ℹ️ Order ${order.orderNumber} payment status: ${state}`);
+
+      order.payment = {
+        ...order.payment,
+        paymentStatus: state.toLowerCase(),
+        intasendInvoiceId: invoice_id || order.payment?.intasendInvoiceId,
+        intasendTrackingId:
+          data.tracking_id || order.payment?.intasendTrackingId,
+      };
+
+      // ✅ Mark event as processed before saving
+      if (event_id && !order.payment.processedEvents.includes(event_id)) {
+        order.payment.processedEvents.push(event_id);
+      }
+
+      await order.save();
     }
   } catch (error) {
     logger.error("❌ Process webhook error:", error);
@@ -434,6 +502,7 @@ const checkPaymentStatus = async (req, res) => {
         intaSendStatus: intaSendStatus?.status || null,
         paidAt: order.payment?.paidAt || null,
         amount: order.totalAmount,
+        processedEvents: order.payment?.processedEvents?.length || 0,
       },
     });
   } catch (error) {
@@ -516,6 +585,7 @@ const verifyPaymentManually = async (req, res) => {
         isComplete: statusCheck.isComplete,
         isFailed: statusCheck.isFailed,
         invoice: statusCheck.invoice || null,
+        processedEvents: order.payment?.processedEvents?.length || 0,
       },
     });
   } catch (error) {

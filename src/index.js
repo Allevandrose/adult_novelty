@@ -17,22 +17,24 @@ const orderRoutes = require("./routes/orderRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const cartRoutes = require("./routes/cartRoutes");
 const adminRoutes = require("./routes/adminRoutes");
+const { errorHandler } = require("./middleware/errorHandler");
 
 const app = express();
 
+// Required for Render/proxy environments
 app.set("trust proxy", 1);
 
 // Connect to MongoDB
 connectDB();
 
-// Use morgan for request logging
+// Request logging
 app.use(
   morgan("combined", {
     stream: { write: (message) => logger.info(message.trim()) },
   }),
 );
 
-// Compression middleware
+// Compression
 app.use(
   compression({
     level: 6,
@@ -44,7 +46,7 @@ app.use(
   }),
 );
 
-// Helmet with optimized config
+// Helmet security
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -54,7 +56,7 @@ app.use(
   }),
 );
 
-// CORS
+// CORS configuration
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5000",
@@ -65,13 +67,11 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) {
+      if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
-      } else {
-        logger.warn(`CORS blocked origin: ${origin}`);
-        return callback(null, false);
       }
+      logger.warn(`CORS blocked origin: ${origin}`);
+      return callback(null, false);
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
@@ -84,20 +84,10 @@ app.use(
       "X-IntaSend-Signature",
     ],
     exposedHeaders: ["Content-Length", "X-Requested-With"],
-    optionsSuccessStatus: 200,
-    preflightContinue: false,
   }),
 );
 
-// Log all requests for debugging
-app.use((req, res, next) => {
-  logger.debug(
-    `${req.method} ${req.path} - Origin: ${req.headers.origin || "No origin"}`,
-  );
-  next();
-});
-
-// General rate limiting
+// General rate limiting (Excluded for webhook)
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -106,20 +96,23 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-app.use("/api", apiLimiter);
+app.use("/api", (req, res, next) => {
+  if (req.originalUrl === "/api/payments/webhook") return next();
+  apiLimiter(req, res, next);
+});
 
-// ✅ IMPORTANT: Regular JSON parsing for all routes EXCEPT webhook
+// JSON parsing with exclusion for webhook
 app.use((req, res, next) => {
-  // Skip JSON parsing for webhook route - it needs raw body
-  if (req.path === "/api/payments/webhook" && req.method === "POST") {
-    return next();
+  if (req.originalUrl === "/api/payments/webhook") {
+    next();
+  } else {
+    express.json({ limit: "10mb" })(req, res, next);
   }
-  express.json({ limit: "10mb" })(req, res, next);
 });
 
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// Serve static files for uploads
+// Static files
 app.use("/uploads", express.static(path.join(__dirname, "../public/uploads")));
 
 // Routes
@@ -131,25 +124,18 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/admin", adminRoutes);
 
-// Health check endpoint
+// Health check
 app.get("/health", (req, res) => {
-  res.json({
-    status: "OK",
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-  });
+  res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// Error handling middleware
-const { errorHandler } = require("./middleware/errorHandler");
+// Error handling
 app.use(errorHandler);
 
 // Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
-  logger.info(`Environment: ${process.env.NODE_ENV || "development"}`);
-  logger.info(`CORS allowed origins: ${allowedOrigins.join(", ")}`);
 });
 
 module.exports = app;
