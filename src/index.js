@@ -48,7 +48,7 @@ app.use(
   }),
 );
 
-// CORS configuration
+// ✅ FIXED CORS configuration
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5000",
@@ -59,11 +59,18 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin || allowedOrigins.indexOf(origin) !== -1) {
-        callback(null, true);
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) {
+        return callback(null, true);
+      }
+
+      // Check if origin is allowed
+      if (allowedOrigins.indexOf(origin) !== -1) {
+        return callback(null, true);
       } else {
-        logger.warn("CORS blocked origin:", origin);
-        callback(new Error("Not allowed by CORS")); // SECURE: Block unauthorized origins
+        logger.warn(`CORS blocked origin: ${origin}`);
+        // Don't throw error, just deny access
+        return callback(null, false);
       }
     },
     credentials: true,
@@ -73,11 +80,20 @@ app.use(
       "Authorization",
       "X-Requested-With",
       "Accept",
+      "Origin",
+      "Access-Control-Allow-Origin",
     ],
     exposedHeaders: ["Content-Length", "X-Requested-With"],
     optionsSuccessStatus: 200,
+    preflightContinue: false,
   }),
 );
+
+// Log all requests for debugging (optional - remove in production)
+app.use((req, res, next) => {
+  logger.debug(`${req.method} ${req.path} - Origin: ${req.headers.origin}`);
+  next();
+});
 
 // General rate limiting
 const apiLimiter = rateLimit({
@@ -102,10 +118,15 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/admin", adminRoutes);
 
+// Error handling middleware (should be last)
+const { errorHandler } = require("./middleware/errorHandler");
+app.use(errorHandler);
+
 // Start server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
+  logger.info(`CORS allowed origins: ${allowedOrigins.join(", ")}`);
 });
 
 module.exports = app;

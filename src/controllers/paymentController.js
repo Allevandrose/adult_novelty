@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const Order = require("../models/Order");
 const intaSendService = require("../services/intasendService");
 const { sendEmail } = require("../services/emailService");
@@ -8,6 +9,7 @@ const initiatePayment = async (req, res) => {
     const { orderId } = req.body;
 
     console.log("📤 Payment initiation request for order:", orderId);
+    console.log("👤 User:", req.user?.id);
 
     if (!orderId) {
       return res.status(400).json({
@@ -27,7 +29,8 @@ const initiatePayment = async (req, res) => {
 
     console.log("📦 Order found:", order.orderNumber);
 
-    if (order.user._id.toString() !== req.user.id) {
+    // Check if user is authorized
+    if (!req.user || order.user._id.toString() !== req.user.id) {
       return res.status(403).json({
         success: false,
         message: "Not authorized to pay for this order",
@@ -46,7 +49,7 @@ const initiatePayment = async (req, res) => {
       orderId: order.orderNumber,
       amount: order.totalAmount,
       email: order.user.email,
-      phoneNumber: order.shippingAddress.phone || "0712345678",
+      phoneNumber: order.shippingAddress?.phone || "0712345678",
       firstName: order.user.email.split("@")[0] || "Customer",
       lastName: "User",
     };
@@ -97,17 +100,25 @@ const initiatePayment = async (req, res) => {
 
 // Handle IntaSend webhook
 const handleWebhook = async (req, res) => {
-  // Respond immediately to avoid timeout
-  res.status(200).send("OK");
-
   try {
-    console.log("📥 Webhook received:", JSON.stringify(req.body, null, 2));
+    const signature = req.headers["x-intasend-signature"];
+    const webhookSecret = process.env.INTASEND_WEBHOOK_SECRET;
 
-    /* 
-       TODO: SECURITY IMPLEMENTATION
-       Use crypto.createHmac('sha256', process.env.INTASEND_WEBHOOK_SECRET)
-       to verify req.headers['x-intasend-signature'] matches the request body.
-    */
+    // 1. Security Verification
+    if (webhookSecret) {
+      const hmac = crypto.createHmac("sha256", webhookSecret);
+      const digest = hmac.update(JSON.stringify(req.body)).digest("hex");
+
+      if (signature !== digest) {
+        console.error("❌ Invalid Webhook Signature");
+        return res.status(403).send("Forbidden");
+      }
+    }
+
+    // Respond immediately to avoid timeout
+    res.status(200).send("OK");
+
+    console.log("📥 Webhook received:", JSON.stringify(req.body, null, 2));
 
     const { invoice_id, api_ref, challenge } = req.body;
 
@@ -146,6 +157,9 @@ const handleWebhook = async (req, res) => {
       if (!order.payment) order.payment = {};
       order.payment.paymentStatus = "completed";
       order.payment.paidAt = new Date();
+
+      // Initialize timeline if it doesn't exist
+      if (!order.timeline) order.timeline = [];
       order.timeline.push({
         status: "paid",
         note: "Payment confirmed via IntaSend",
