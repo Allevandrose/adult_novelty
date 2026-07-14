@@ -25,6 +25,13 @@ app.set("trust proxy", 1);
 // Connect to MongoDB
 connectDB();
 
+// ✅ FIX: Use morgan for request logging
+app.use(
+  morgan("combined", {
+    stream: { write: (message) => logger.info(message.trim()) },
+  }),
+);
+
 // Compression middleware
 app.use(
   compression({
@@ -108,6 +115,9 @@ app.use("/api", apiLimiter);
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
+// ✅ FIX: Serve static files for uploads
+app.use("/uploads", express.static(path.join(__dirname, "../public/uploads")));
+
 // Routes
 app.use("/api/auth", authRoutes);
 app.use("/api/categories", categoryRoutes);
@@ -119,7 +129,11 @@ app.use("/api/admin", adminRoutes);
 
 // Health check endpoint
 app.get("/health", (req, res) => {
-  res.json({ status: "OK", timestamp: new Date().toISOString() });
+  res.json({
+    status: "OK",
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+  });
 });
 
 // Error handling middleware (should be last)
@@ -130,6 +144,7 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
+  logger.info(`Environment: ${process.env.NODE_ENV || "development"}`);
   logger.info(`CORS allowed origins: ${allowedOrigins.join(", ")}`);
 });
 

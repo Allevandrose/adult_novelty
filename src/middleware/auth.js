@@ -57,10 +57,14 @@ const auth = async (req, res, next) => {
     try {
       const cachedUser = await getCache(`user:${decoded.id}`);
       if (cachedUser) {
+        // ✅ FIX: Ensure consistent user object structure
         req.user = {
-          ...cachedUser,
-          id: cachedUser._id || cachedUser.id || decoded.id,
-          _id: cachedUser._id || cachedUser.id || decoded.id,
+          _id: cachedUser._id || cachedUser.id,
+          id: cachedUser._id || cachedUser.id,
+          email: cachedUser.email,
+          phone: cachedUser.phone,
+          name: cachedUser.name || "",
+          role: cachedUser.role || "user",
         };
         return next();
       }
@@ -80,11 +84,16 @@ const auth = async (req, res, next) => {
       });
     }
 
-    // Add 'id' field for compatibility
+    // ✅ FIX: Consistent user object - BOTH _id and id present
     req.user = {
-      ...user,
-      id: user._id,
+      _id: user._id,
+      id: user._id.toString(),
+      email: user.email,
+      phone: user.phone,
+      name: user.name || "",
+      role: user.role || "user",
     };
+
     next();
   } catch (error) {
     logger.error("Auth middleware error:", error);

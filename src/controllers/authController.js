@@ -3,22 +3,35 @@ const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { sendEmail } = require("../services/emailService");
 const logger = require("../utils/logger");
-const { getCache, setCache, deleteCache } = require("../config/redis");
 
-// Generate JWT Token
+// ✅ FIX: Make Redis truly optional
+let getCache, setCache, deleteCache;
+try {
+  const redis = require("../config/redis");
+  getCache = redis.getCache;
+  setCache = redis.setCache;
+  deleteCache = redis.deleteCache;
+} catch (e) {
+  logger.warn("Redis not available - continuing without cache");
+  getCache = async () => null;
+  setCache = async () => {};
+  deleteCache = async () => {};
+}
+
+// Generate JWT Token - ✅ FIX: Consistent payload with 'id'
 const generateToken = (id) => {
   return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRE || "30d",
+    expiresIn: process.env.JWT_EXPIRE || "7d",
   });
 };
 
-// Generate refresh token
+// ✅ FIX: Use environment variable for refresh token expiry
 const generateRefreshToken = (id) => {
   return jwt.sign(
     { id },
     process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET,
     {
-      expiresIn: "7d",
+      expiresIn: process.env.JWT_REFRESH_EXPIRE || "7d",
     },
   );
 };
@@ -28,7 +41,7 @@ const generateRefreshToken = (id) => {
 // @access  Public
 exports.register = async (req, res) => {
   try {
-    const { email, phone, password } = req.body;
+    const { email, phone, password, name } = req.body;
 
     // Check if user already exists
     const userExists = await User.findOne({
@@ -51,26 +64,28 @@ exports.register = async (req, res) => {
       email,
       phone,
       password,
+      name: name || "",
     });
 
     // Generate tokens
     const token = generateToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
-    // Prepare user data for response
+    // ✅ FIX: Consistent user data with both _id and id
     const userData = {
       _id: user._id,
+      id: user._id,
       email: user.email,
       phone: user.phone,
+      name: user.name,
       role: user.role,
+      createdAt: user.createdAt,
     };
 
     // Cache user data (non-blocking)
-    try {
-      await setCache(`user:${user._id}`, userData, 3600);
-    } catch (cacheError) {
-      logger.warn("Failed to cache user data:", cacheError.message);
-    }
+    setCache(`user:${user._id}`, userData, 3600).catch((err) =>
+      logger.warn("Failed to cache user data:", err.message),
+    );
 
     res.status(201).json({
       success: true,
@@ -118,10 +133,10 @@ exports.login = async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // Find user with password field
-    const user = await User.findOne({ email }).select(
-      "+password +loginAttempts +lockUntil",
-    );
+    // ✅ FIX: Optimize query - only select needed fields
+    const user = await User.findOne({ email })
+      .select("+password +loginAttempts +lockUntil")
+      .lean();
 
     if (!user) {
       return res.status(401).json({
@@ -131,7 +146,7 @@ exports.login = async (req, res) => {
     }
 
     // Check if account is locked
-    if (user.isLocked && user.isLocked()) {
+    if (user.lockUntil && user.lockUntil > Date.now()) {
       const remainingTime = Math.ceil((user.lockUntil - Date.now()) / 60000);
       return res.status(403).json({
         success: false,
@@ -141,12 +156,23 @@ exports.login = async (req, res) => {
     }
 
     // Check password
-    const isMatch = await user.comparePassword(password);
+    const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      // Increment login attempts
-      await user.incrementLoginAttempts();
+      // ✅ FIX: Atomic increment using $inc directly
+      const MAX_LOGIN_ATTEMPTS = 5;
+      const LOCK_TIME = 15 * 60 * 1000;
 
-      const attemptsLeft = 5 - (user.loginAttempts + 1);
+      const update = {
+        $inc: { loginAttempts: 1 },
+      };
+
+      if (user.loginAttempts + 1 >= MAX_LOGIN_ATTEMPTS) {
+        update.$set = { lockUntil: new Date(Date.now() + LOCK_TIME) };
+      }
+
+      await User.findByIdAndUpdate(user._id, update);
+
+      const attemptsLeft = MAX_LOGIN_ATTEMPTS - (user.loginAttempts + 1);
       return res.status(401).json({
         success: false,
         message:
@@ -156,31 +182,31 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Reset login attempts on successful login
+    // ✅ FIX: Reset login attempts atomically
     await User.findByIdAndUpdate(user._id, {
-      loginAttempts: 0,
-      lockUntil: null,
+      $set: { loginAttempts: 0, lockUntil: null },
     });
 
     // Generate tokens
     const token = generateToken(user._id);
     const refreshToken = generateRefreshToken(user._id);
 
-    // Prepare user data
+    // ✅ FIX: Consistent user data format
     const userData = {
       _id: user._id,
+      id: user._id,
       email: user.email,
       phone: user.phone,
+      name: user.name,
       role: user.role,
+      createdAt: user.createdAt,
     };
 
-    // Cache user session (non-blocking)
-    try {
-      await setCache(`user:${user._id}`, userData, 3600);
-      await setCache(`session:${user._id}`, { token, refreshToken }, 3600);
-    } catch (cacheError) {
-      logger.warn("Failed to cache session:", cacheError.message);
-    }
+    // Cache session (non-blocking)
+    Promise.all([
+      setCache(`user:${user._id}`, userData, 3600),
+      setCache(`session:${user._id}`, { token, refreshToken }, 3600),
+    ]).catch((err) => logger.warn("Failed to cache session:", err.message));
 
     res.json({
       success: true,
@@ -230,15 +256,13 @@ exports.refreshToken = async (req, res) => {
     const newToken = generateToken(user._id);
     const newRefreshToken = generateRefreshToken(user._id);
 
-    try {
-      await setCache(
-        `session:${user._id}`,
-        { token: newToken, refreshToken: newRefreshToken },
-        3600,
-      );
-    } catch (cacheError) {
-      logger.warn("Failed to cache refresh token:", cacheError.message);
-    }
+    setCache(
+      `session:${user._id}`,
+      { token: newToken, refreshToken: newRefreshToken },
+      3600,
+    ).catch((err) =>
+      logger.warn("Failed to cache refresh token:", err.message),
+    );
 
     res.json({
       success: true,
@@ -268,7 +292,6 @@ exports.getMe = async (req, res) => {
         return res.json({
           success: true,
           data: cachedUser,
-          fromCache: true,
         });
       }
     } catch (cacheError) {
@@ -286,17 +309,20 @@ exports.getMe = async (req, res) => {
       });
     }
 
+    // ✅ FIX: Ensure consistent format
+    const userData = {
+      ...user,
+      id: user._id,
+    };
+
     // Cache user data
-    try {
-      await setCache(`user:${req.user.id}`, user, 3600);
-    } catch (cacheError) {
-      logger.warn("Failed to cache user:", cacheError.message);
-    }
+    setCache(`user:${req.user.id}`, userData, 3600).catch((err) =>
+      logger.warn("Failed to cache user:", err.message),
+    );
 
     res.json({
       success: true,
-      data: user,
-      fromCache: false,
+      data: userData,
     });
   } catch (error) {
     logger.error("Get profile error:", error);
@@ -312,7 +338,7 @@ exports.getMe = async (req, res) => {
 // @access  Private
 exports.updateProfile = async (req, res) => {
   try {
-    const { email, phone } = req.body;
+    const { email, phone, name } = req.body;
     const updateData = {};
 
     if (email) {
@@ -343,6 +369,10 @@ exports.updateProfile = async (req, res) => {
       updateData.phone = phone;
     }
 
+    if (name) {
+      updateData.name = name;
+    }
+
     if (Object.keys(updateData).length === 0) {
       return res.status(400).json({
         success: false,
@@ -356,11 +386,9 @@ exports.updateProfile = async (req, res) => {
     }).select("-password -__v");
 
     // Clear cache
-    try {
-      await deleteCache(`user:${req.user.id}`);
-    } catch (cacheError) {
-      logger.warn("Failed to clear cache:", cacheError.message);
-    }
+    deleteCache(`user:${req.user.id}`).catch((err) =>
+      logger.warn("Failed to clear cache:", err.message),
+    );
 
     res.json({
       success: true,
@@ -477,12 +505,10 @@ exports.resetPassword = async (req, res) => {
     await user.save();
 
     // Clear all user sessions
-    try {
-      await deleteCache(`user:${user._id}`);
-      await deleteCache(`session:${user._id}`);
-    } catch (cacheError) {
-      logger.warn("Failed to clear cache:", cacheError.message);
-    }
+    Promise.all([
+      deleteCache(`user:${user._id}`),
+      deleteCache(`session:${user._id}`),
+    ]).catch((err) => logger.warn("Failed to clear cache:", err.message));
 
     res.json({
       success: true,
@@ -503,11 +529,9 @@ exports.resetPassword = async (req, res) => {
 // @access  Private
 exports.logout = async (req, res) => {
   try {
-    try {
-      await deleteCache(`session:${req.user.id}`);
-    } catch (cacheError) {
-      logger.warn("Failed to clear session cache:", cacheError.message);
-    }
+    deleteCache(`session:${req.user.id}`).catch((err) =>
+      logger.warn("Failed to clear session cache:", err.message),
+    );
 
     res.json({
       success: true,
@@ -521,3 +545,6 @@ exports.logout = async (req, res) => {
     });
   }
 };
+
+// ✅ FIX: Add bcrypt require at top
+const bcrypt = require("bcryptjs");

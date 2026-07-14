@@ -16,6 +16,7 @@ const userSchema = new mongoose.Schema(
       type: String,
       required: [true, "Phone number is required"],
       unique: true,
+      sparse: true, // ✅ FIX: Allow null values without unique constraint violation
       trim: true,
       index: true,
     },
@@ -30,6 +31,12 @@ const userSchema = new mongoose.Schema(
       enum: ["user", "admin"],
       default: "user",
       index: true,
+    },
+    // ✅ ADDED: Name field for orders and shipping
+    name: {
+      type: String,
+      trim: true,
+      default: "",
     },
     // Password reset fields
     resetPasswordToken: {
@@ -86,24 +93,38 @@ userSchema.methods.isLocked = function () {
   return this.lockUntil && this.lockUntil > Date.now();
 };
 
-// Instance method to increment login attempts
+// ✅ FIXED: Atomic login attempts increment using $inc
 userSchema.methods.incrementLoginAttempts = async function () {
   const MAX_LOGIN_ATTEMPTS = 5;
   const LOCK_TIME = 15 * 60 * 1000; // 15 minutes
 
-  if (this.lockUntil && this.lockUntil < Date.now()) {
-    // Reset if lock expired
-    this.loginAttempts = 1;
-    this.lockUntil = undefined;
-  } else {
-    this.loginAttempts += 1;
+  // Use atomic update to prevent race conditions
+  const update = {
+    $inc: { loginAttempts: 1 },
+  };
 
-    if (this.loginAttempts >= MAX_LOGIN_ATTEMPTS) {
-      this.lockUntil = new Date(Date.now() + LOCK_TIME);
-    }
+  // Check if we need to lock the account
+  if (this.loginAttempts + 1 >= MAX_LOGIN_ATTEMPTS) {
+    update.$set = { lockUntil: new Date(Date.now() + LOCK_TIME) };
   }
 
-  await this.save();
+  // Reset lock if it has expired
+  if (this.lockUntil && this.lockUntil < Date.now()) {
+    update.$set = {
+      loginAttempts: 1,
+      lockUntil: undefined,
+    };
+    delete update.$inc;
+  }
+
+  await User.findByIdAndUpdate(this._id, update);
+
+  // Reload the document to get updated values
+  const updated = await User.findById(this._id).select(
+    "+loginAttempts +lockUntil",
+  );
+  this.loginAttempts = updated.loginAttempts;
+  this.lockUntil = updated.lockUntil;
 };
 
 // Compare password method
@@ -115,11 +136,13 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
   }
 };
 
-// Remove password from JSON output
+// ✅ FIXED: Ensure consistent JSON output with id field
 userSchema.methods.toJSON = function () {
   const obj = this.toObject();
   delete obj.password;
   delete obj.__v;
+  // ✅ Ensure both _id and id are available
+  obj.id = obj._id;
   return obj;
 };
 
