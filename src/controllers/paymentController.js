@@ -2,7 +2,9 @@ const Order = require("../models/Order");
 const intaSendService = require("../services/intasendService");
 const crypto = require("crypto");
 
-// Initiate payment for an order
+/**
+ * Initiate payment for an order
+ */
 const initiatePayment = async (req, res) => {
   try {
     const { orderId, paymentMethod = "checkout" } = req.body;
@@ -29,8 +31,14 @@ const initiatePayment = async (req, res) => {
     console.log("📦 Order found:", order.orderNumber);
     console.log("💰 Amount:", order.totalAmount);
 
+    // ✅ FIX: Convert both to strings for safe comparison
+    const orderUserId = order.user._id.toString();
+    const requestUserId = req.user.id.toString();
+
+    console.log(`🔍 Comparing: "${orderUserId}" === "${requestUserId}"`);
+
     // Check authorization
-    if (order.user._id.toString() !== req.user.id) {
+    if (orderUserId !== requestUserId) {
       return res.status(403).json({
         success: false,
         message: "Not authorized to pay for this order",
@@ -49,15 +57,12 @@ const initiatePayment = async (req, res) => {
       orderId: order.orderNumber,
       amount: order.totalAmount,
       email: order.user.email,
-      phoneNumber: order.shippingAddress.phone || "254700000000",
+      phoneNumber: order.shippingAddress?.phone || "254700000000",
       firstName: order.user.email.split("@")[0] || "Customer",
       lastName: "User",
     };
 
-    console.log("📤 Sending to IntaSend:", {
-      ...paymentData,
-      phoneNumber: "***",
-    });
+    console.log("📤 Sending to IntaSend for:", order.orderNumber);
 
     // Create checkout with IntaSend
     const result = await intaSendService.createCheckout(paymentData);
@@ -81,8 +86,7 @@ const initiatePayment = async (req, res) => {
     };
     await order.save();
 
-    console.log("✅ Payment initiated:", result.invoiceId);
-    console.log("✅ Payment URL:", result.url);
+    console.log("✅ Payment initiated, Invoice ID:", result.invoiceId);
 
     res.json({
       success: true,
@@ -102,43 +106,35 @@ const initiatePayment = async (req, res) => {
   }
 };
 
-// Handle IntaSend webhook
+/**
+ * Handle IntaSend webhook
+ */
 const handleWebhook = async (req, res) => {
   console.log("📥 Webhook received at:", new Date().toISOString());
 
-  // Always respond immediately to prevent timeout
+  // Respond immediately to prevent timeout
   res.status(200).send("OK");
 
   try {
-    // Get the raw body and headers
     const body = req.body;
-    const signature = req.headers["x-intasend-signature"];
-
-    console.log("📥 Webhook body:", JSON.stringify(body, null, 2));
-    console.log("🔑 Signature header:", signature);
 
     // Handle challenge verification
     if (body.challenge) {
-      console.log("🔑 Webhook challenge received:", body.challenge);
-      // Optionally validate the challenge
-      if (body.challenge === process.env.INTASEND_WEBHOOK_CHALLENGE) {
-        console.log("✅ Challenge verified");
-      }
+      console.log("🔑 Webhook challenge received");
       return;
     }
 
-    // Process payment webhook
     await processPaymentWebhook(body);
   } catch (error) {
     console.error("❌ Webhook processing error:", error);
   }
 };
 
-// Process payment webhook data
+/**
+ * Internal helper: Process payment webhook data
+ */
 const processPaymentWebhook = async (data) => {
   try {
-    console.log("📥 Processing payment webhook...");
-
     const {
       invoice_id,
       api_ref,
@@ -149,72 +145,38 @@ const processPaymentWebhook = async (data) => {
       currency,
     } = data;
 
-    console.log(
-      `📊 Payment ${state} for invoice: ${invoice_id}, ref: ${api_ref}`,
-    );
+    if (!invoice_id || !api_ref) return;
 
-    if (!invoice_id || !api_ref) {
-      console.error("❌ Missing invoice_id or api_ref");
-      return;
-    }
-
-    // Find order by orderNumber (api_ref)
     const order = await Order.findOne({ orderNumber: api_ref });
+    if (!order || order.status === "paid") return;
 
-    if (!order) {
-      console.error(`❌ Order not found: ${api_ref}`);
-      return;
-    }
-
-    console.log(
-      `📦 Found order: ${order.orderNumber}, current status: ${order.status}`,
-    );
-
-    // Check if already processed
-    if (order.status === "paid") {
-      console.log(`⏭️ Order ${order.orderNumber} already paid`);
-      return;
-    }
-
-    // Update based on payment state
     if (state === "COMPLETE") {
-      // Payment successful
       order.status = "paid";
-      if (!order.payment) order.payment = {};
-      order.payment.paymentStatus = "completed";
-      order.payment.paidAt = new Date();
-      order.payment.provider = provider;
-      order.payment.amountPaid = value;
-      order.payment.currency = currency;
-      order.payment.invoiceId = invoice_id;
+      order.payment = {
+        ...order.payment,
+        paymentStatus: "completed",
+        paidAt: new Date(),
+        provider,
+        amountPaid: value,
+        currency,
+        invoiceId: invoice_id,
+      };
 
       order.timeline.push({
         status: "paid",
-        note: `Payment confirmed via IntaSend webhook (Invoice: ${invoice_id})`,
+        note: `Payment confirmed via IntaSend (Invoice: ${invoice_id})`,
         timestamp: new Date(),
       });
 
       await order.save();
-
       console.log(`✅✅✅ Order ${order.orderNumber} marked as PAID!`);
-      console.log(`💰 Amount: ${value} ${currency}`);
     } else if (state === "FAILED") {
-      // Payment failed
       order.status = "payment_failed";
       order.timeline.push({
         status: "payment_failed",
-        note: `Payment failed: ${failed_reason || "Unknown reason"}`,
+        note: `Payment failed: ${failed_reason || "Unknown"}`,
         timestamp: new Date(),
       });
-
-      await order.save();
-      console.log(
-        `❌ Order ${order.orderNumber} payment failed: ${failed_reason}`,
-      );
-    } else if (state === "PENDING" || state === "PROCESSING") {
-      // Payment in progress - just log
-      console.log(`⏳ Payment for order ${order.orderNumber} is ${state}`);
-      order.payment.paymentStatus = "processing";
       await order.save();
     }
   } catch (error) {
@@ -223,55 +185,43 @@ const processPaymentWebhook = async (data) => {
   }
 };
 
-// Check payment status
+/**
+ * Check payment status (User facing)
+ */
 const checkPaymentStatus = async (req, res) => {
   try {
     const { orderId } = req.params;
-
-    console.log(`🔍 Checking payment status for order: ${orderId}`);
-
     const order = await Order.findById(orderId);
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: "Order not found",
-      });
+
+    if (!order)
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
+
+    // Authorization check
+    if (
+      order.user.toString() !== req.user.id.toString() &&
+      req.user.role !== "admin"
+    ) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Not authorized" });
     }
 
-    // Check authorization
-    if (order.user.toString() !== req.user.id && req.user.role !== "admin") {
-      return res.status(403).json({
-        success: false,
-        message: "Not authorized",
-      });
-    }
-
-    // If we have an invoice ID, check with IntaSend
     let intaSendStatus = null;
     if (order.payment?.intasendInvoiceId) {
-      console.log(
-        `🔍 Checking with IntaSend: ${order.payment.intasendInvoiceId}`,
-      );
       const statusCheck = await intaSendService.checkStatus(
         order.payment.intasendInvoiceId,
       );
 
       if (statusCheck.success) {
         intaSendStatus = statusCheck;
-        console.log(`📊 IntaSend status: ${statusCheck.status}`);
-
-        // Update order if payment is complete but we missed the webhook
+        // Sync if needed
         if (statusCheck.isComplete && order.status !== "paid") {
-          console.log(
-            `🔄 Order ${order.orderNumber} payment complete, updating...`,
-          );
           order.status = "paid";
           order.payment.paymentStatus = "completed";
           order.payment.paidAt = new Date();
           await order.save();
-          console.log(
-            `✅ Order ${order.orderNumber} marked as PAID via status check`,
-          );
         }
       }
     }
@@ -281,98 +231,49 @@ const checkPaymentStatus = async (req, res) => {
       data: {
         orderStatus: order.status,
         paymentStatus: order.payment?.paymentStatus || "pending",
-        paidAt: order.payment?.paidAt || null,
         intaSendStatus: intaSendStatus?.status || null,
-        orderNumber: order.orderNumber,
-        totalAmount: order.totalAmount,
       },
     });
   } catch (error) {
-    console.error("❌ Check payment status error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
-// Manual payment verification (admin only)
+/**
+ * Manual verification (Admin only)
+ */
 const verifyPaymentManually = async (req, res) => {
   try {
     const { orderId } = req.params;
-
-    console.log(`🔍 Manual payment verification for order: ${orderId}`);
-
     const order = await Order.findById(orderId);
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: "Order not found",
-      });
-    }
 
-    if (order.status === "paid") {
-      return res.json({
-        success: true,
-        message: "Order is already paid",
-        data: { orderStatus: order.status },
-      });
-    }
-
-    if (!order.payment?.intasendInvoiceId) {
-      return res.status(400).json({
-        success: false,
-        message: "No payment record found for this order",
-      });
-    }
+    if (!order)
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
+    if (!order.payment?.intasendInvoiceId)
+      return res
+        .status(400)
+        .json({ success: false, message: "No payment record" });
 
     const statusCheck = await intaSendService.checkStatus(
       order.payment.intasendInvoiceId,
     );
 
-    if (!statusCheck.success) {
-      return res.status(500).json({
-        success: false,
-        message: "Failed to check payment status",
-        details: statusCheck.message,
-      });
-    }
-
-    if (statusCheck.isComplete) {
+    if (statusCheck.isComplete && order.status !== "paid") {
       order.status = "paid";
       order.payment.paymentStatus = "completed";
       order.payment.paidAt = new Date();
       await order.save();
-
-      console.log(
-        `✅ Order ${order.orderNumber} manually verified and marked as PAID`,
-      );
-
-      return res.json({
-        success: true,
-        message: "Payment verified and order updated",
-        data: {
-          orderStatus: order.status,
-          paymentStatus: order.payment.paymentStatus,
-        },
-      });
     }
 
     res.json({
       success: true,
-      message: `Payment status: ${statusCheck.status}`,
-      data: {
-        orderStatus: order.status,
-        paymentStatus: order.payment?.paymentStatus,
-        intaSendStatus: statusCheck.status,
-      },
+      message: "Verification complete",
+      data: { orderStatus: order.status },
     });
   } catch (error) {
-    console.error("❌ Manual verification error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Server error",
-    });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 };
 
@@ -382,3 +283,4 @@ module.exports = {
   checkPaymentStatus,
   verifyPaymentManually,
 };
+
