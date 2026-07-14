@@ -20,7 +20,6 @@ const adminRoutes = require("./routes/adminRoutes");
 
 const app = express();
 
-// --- FIX: Trust the proxy (Render) ---
 app.set("trust proxy", 1);
 
 // Connect to MongoDB
@@ -48,7 +47,7 @@ app.use(
   }),
 );
 
-// ✅ FIXED CORS configuration
+// ✅ FIXED CORS - More permissive for development
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5000",
@@ -60,16 +59,14 @@ app.use(
   cors({
     origin: function (origin, callback) {
       // Allow requests with no origin (like mobile apps or curl requests)
-      if (!origin) {
-        return callback(null, true);
-      }
+      if (!origin) return callback(null, true);
 
       // Check if origin is allowed
-      if (allowedOrigins.indexOf(origin) !== -1) {
+      if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       } else {
         logger.warn(`CORS blocked origin: ${origin}`);
-        // Don't throw error, just deny access
+        // Return false instead of error to avoid 403
         return callback(null, false);
       }
     },
@@ -89,9 +86,11 @@ app.use(
   }),
 );
 
-// Log all requests for debugging (optional - remove in production)
+// Log all requests for debugging
 app.use((req, res, next) => {
-  logger.debug(`${req.method} ${req.path} - Origin: ${req.headers.origin}`);
+  logger.debug(
+    `${req.method} ${req.path} - Origin: ${req.headers.origin || "No origin"}`,
+  );
   next();
 });
 
@@ -117,6 +116,11 @@ app.use("/api/orders", orderRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/admin", adminRoutes);
+
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({ status: "OK", timestamp: new Date().toISOString() });
+});
 
 // Error handling middleware (should be last)
 const { errorHandler } = require("./middleware/errorHandler");
