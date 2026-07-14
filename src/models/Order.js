@@ -6,11 +6,13 @@ const orderSchema = new mongoose.Schema(
       type: String,
       required: true,
       unique: true,
+      index: true,
     },
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+      index: true,
     },
     items: [
       {
@@ -27,8 +29,8 @@ const orderSchema = new mongoose.Schema(
           min: 1,
         },
         selectedVariant: {
-          size: String,
-          color: String,
+          size: { type: String, default: "" },
+          color: { type: String, default: "" },
         },
       },
     ],
@@ -44,31 +46,40 @@ const orderSchema = new mongoose.Schema(
       type: Number,
       required: true,
     },
+    // ✅ FIX: Added 'payment_failed' to enum
     status: {
       type: String,
       enum: [
         "pending",
         "processing",
         "paid",
+        "payment_failed",
         "shipped",
         "delivered",
         "cancelled",
       ],
       default: "pending",
+      index: true,
     },
     shippingAddress: {
-      street: String,
-      city: String,
-      county: String,
-      postalCode: String,
-      phone: String,
+      street: { type: String, default: "" },
+      city: { type: String, default: "" },
+      county: { type: String, default: "" },
+      postalCode: { type: String, default: "" },
+      phone: { type: String, required: true },
     },
+    // ✅ FIX: Complete payment schema matching IntaSend response
     payment: {
       method: {
         type: String,
-        enum: ["mpesa", "airtel", "card"],
+        enum: ["mpesa", "airtel", "card", "bank_transfer", "checkout"],
+        default: "checkout",
       },
-      // ✅ Renamed from pesapal to intasend
+      provider: {
+        type: String,
+        enum: ["INTASEND", "MPESA", "AIRTEL", "CARD", "BANK"],
+        default: "INTASEND",
+      },
       intasendInvoiceId: {
         type: String,
         index: true,
@@ -78,11 +89,17 @@ const orderSchema = new mongoose.Schema(
       },
       paymentStatus: {
         type: String,
-        enum: ["pending", "completed", "failed"],
+        enum: ["pending", "processing", "completed", "failed", "cancelled"],
         default: "pending",
       },
       paidAt: Date,
+      amountPaid: Number,
+      currency: {
+        type: String,
+        default: "KES",
+      },
       redirectUrl: String,
+      failedReason: String,
     },
     timeline: [
       {
@@ -102,16 +119,46 @@ const orderSchema = new mongoose.Schema(
   },
 );
 
+// ✅ Compound indexes for common queries
+orderSchema.index({ user: 1, createdAt: -1 });
+orderSchema.index({ status: 1, createdAt: -1 });
+orderSchema.index({ "payment.intasendInvoiceId": 1 });
+
 // Add timeline entry on status change
 orderSchema.pre("save", function (next) {
   if (this.isModified("status")) {
     this.timeline.push({
       status: this.status,
       timestamp: new Date(),
-      note: `Order ${this.status}`,
+      note: `Order ${this.status.replace(/_/g, " ")}`,
     });
   }
   next();
 });
+
+// ✅ Virtual for order age
+orderSchema.virtual("age").get(function () {
+  return Date.now() - this.createdAt;
+});
+
+// ✅ Method to check if order can be cancelled
+orderSchema.methods.canCancel = function () {
+  return ["pending", "processing"].includes(this.status);
+};
+
+// ✅ Method to check if payment is complete
+orderSchema.methods.isPaid = function () {
+  return this.status === "paid" && this.payment?.paymentStatus === "completed";
+};
+
+// Ensure virtuals in JSON
+orderSchema.set("toJSON", {
+  virtuals: true,
+  transform: (doc, ret) => {
+    ret.id = ret._id;
+    return ret;
+  },
+});
+orderSchema.set("toObject", { virtuals: true });
 
 module.exports = mongoose.model("Order", orderSchema);

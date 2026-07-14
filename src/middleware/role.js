@@ -1,32 +1,25 @@
-const roleMiddleware = (...roles) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        message: "Not authorized",
-      });
-    }
+const logger = require("../utils/logger");
 
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        message: `Role ${req.user.role} is not authorized to access this route`,
-      });
-    }
-
-    next();
-  };
-};
-
-// Helper to check if user is admin
+/**
+ * Middleware to check if user is admin
+ */
 const isAdmin = (req, res, next) => {
-  if (!req.user || req.user.role !== "admin") {
-    return res.status(403).json({
+  if (!req.user) {
+    return res.status(401).json({
       success: false,
-      message: "Admin access required",
+      message: "Not authenticated",
     });
   }
+
+  if (req.user.role !== "admin") {
+    logger.warn(`❌ Non-admin access attempt by user: ${req.user.id}`);
+    return res.status(403).json({
+      success: false,
+      message: "Access denied. Admin only.",
+    });
+  }
+
   next();
 };
 
-module.exports = { roleMiddleware, isAdmin };
+module.exports = { isAdmin };

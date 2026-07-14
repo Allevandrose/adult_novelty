@@ -4,20 +4,21 @@ const {
   createOrder,
   getMyOrders,
   getOrder,
-  cancelOrder, // 🆕 Imported cancelOrder controller
+  cancelOrder,
   getOrders,
   updateOrderStatus,
 } = require("../controllers/orderController");
 const auth = require("../middleware/auth");
+const { isAdmin } = require("../middleware/role");
 
-// Protected routes (require login)
+// ✅ Protected routes (any authenticated user)
 router.post("/", auth, createOrder);
 router.get("/my", auth, getMyOrders);
 router.get("/:id", auth, getOrder);
-router.put("/:id/cancel", auth, cancelOrder); // 🆕 Registered order cancellation endpoint
+router.put("/:id/cancel", auth, cancelOrder);
 
-// Admin only routes
-router.get("/", auth, getOrders);
-router.put("/:id/status", auth, updateOrderStatus);
+// ✅ Admin only routes
+router.get("/", auth, isAdmin, getOrders);
+router.put("/:id/status", auth, isAdmin, updateOrderStatus);
 
 module.exports = router;

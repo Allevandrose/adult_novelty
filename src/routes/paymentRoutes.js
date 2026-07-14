@@ -9,14 +9,14 @@ const {
 const auth = require("../middleware/auth");
 const { isAdmin } = require("../middleware/role");
 
-// Public webhook - IntaSend calls this
+// ✅ Public webhook - IntaSend calls this (no auth)
 router.post("/webhook", handleWebhook);
 
-// Protected routes - require authentication
+// ✅ Protected routes - require authentication
 router.post("/initiate", auth, initiatePayment);
 router.get("/status/:orderId", auth, checkPaymentStatus);
 
-// Admin only routes
+// ✅ Admin only routes
 router.get("/verify/:orderId", auth, isAdmin, verifyPaymentManually);
 
 module.exports = router;

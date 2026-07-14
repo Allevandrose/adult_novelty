@@ -1,41 +1,28 @@
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const { generateOrderNumber } = require("../utils/generateOrderNumber");
-const { sendEmail } = require("../services/emailService");
 const logger = require("../utils/logger");
 
-// Shipping configuration from environment variables
+// Shipping configuration
 const SHIPPING_FEE = parseInt(process.env.SHIPPING_FEE) || 0;
 const FREE_SHIPPING_THRESHOLD =
   parseInt(process.env.FREE_SHIPPING_THRESHOLD) || 0;
 
-// @desc    Create order
+// @desc    Create order from cart/checkout
 // @route   POST /api/orders
 // @access  Private
 const createOrder = async (req, res) => {
   try {
     const { items, shippingAddress, notes } = req.body;
 
-    // ✅ EXTENSIVE DEBUG LOGGING
-    console.log("========================================");
-    console.log("📝 ORDER CREATION - FULL DEBUG:");
-    console.log("  req.user:", JSON.stringify(req.user, null, 2));
-    console.log("  req.user.id:", req.user.id);
-    console.log("  req.user._id:", req.user._id);
-    console.log("  req.user.email:", req.user.email);
-    console.log("  req.user.role:", req.user.role);
-    console.log("  Type of req.user.id:", typeof req.user.id);
-    console.log("  Type of req.user._id:", typeof req.user._id);
-    console.log("========================================");
-
-    logger.info("📥 Received order request");
-    logger.debug("  Items:", JSON.stringify(items, null, 2));
-    logger.debug("  Shipping Address:", shippingAddress);
-    logger.debug("  User ID:", req.user.id);
+    // ✅ Use logger consistently
+    logger.info("📥 Order creation request", {
+      userId: req.user.id,
+      itemCount: items?.length || 0,
+    });
 
     // Validate items
-    if (!items || items.length === 0) {
-      logger.warn("❌ No items in order");
+    if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
         success: false,
         message: "Order must contain at least one item",
@@ -44,7 +31,6 @@ const createOrder = async (req, res) => {
 
     // Validate shipping address
     if (!shippingAddress || !shippingAddress.phone) {
-      logger.warn("❌ Missing shipping address or phone");
       return res.status(400).json({
         success: false,
         message: "Shipping address with phone number is required",
@@ -54,11 +40,9 @@ const createOrder = async (req, res) => {
     let subtotal = 0;
     const orderItems = [];
 
+    // Process each item
     for (const item of items) {
-      logger.debug(`🔍 Looking for product: ${item.productId}`);
-
       if (!item.productId) {
-        logger.warn("❌ Missing productId in item:", item);
         return res.status(400).json({
           success: false,
           message: "Each item must have a productId",
@@ -66,20 +50,26 @@ const createOrder = async (req, res) => {
       }
 
       const product = await Product.findById(item.productId);
+
       if (!product) {
-        logger.warn(`❌ Product not found: ${item.productId}`);
         return res.status(404).json({
           success: false,
           message: `Product not found: ${item.productId}`,
         });
       }
 
-      logger.debug(`✅ Product found: ${product.name}`);
+      if (!product.isActive) {
+        return res.status(400).json({
+          success: false,
+          message: `${product.name} is no longer available`,
+        });
+      }
 
-      const hasValidVariant =
-        item.selectedVariant?.size || item.selectedVariant?.color;
+      const quantity = item.quantity || 1;
+      let itemPrice = product.price;
 
-      if (hasValidVariant) {
+      // Handle variants
+      if (item.selectedVariant?.size || item.selectedVariant?.color) {
         const variant = product.variants.find(
           (v) =>
             v.size === item.selectedVariant.size &&
@@ -87,211 +77,288 @@ const createOrder = async (req, res) => {
         );
 
         if (!variant) {
-          const available = product.variants
-            .map(
-              (v) =>
-                `${v.color || "No color"} ${v.size || "No size"} (stock: ${v.stock})`,
-            )
-            .join(", ");
-          logger.warn(`❌ Variant not found. Available: ${available}`);
           return res.status(400).json({
             success: false,
-            message: `Variant not found. Available: ${available}`,
+            message: `Selected variant not available for ${product.name}`,
           });
         }
 
-        if (variant.stock < item.quantity) {
-          logger.warn(`❌ Insufficient stock`);
+        if (variant.stock < quantity) {
           return res.status(400).json({
             success: false,
             message: `Insufficient stock for ${product.name}. Available: ${variant.stock}`,
           });
         }
 
-        const itemPrice = variant.price || product.price;
-        subtotal += itemPrice * item.quantity;
-
-        orderItems.push({
-          product: product._id,
-          name: product.name,
-          price: itemPrice,
-          quantity: item.quantity,
-          selectedVariant: {
-            size: item.selectedVariant.size || "",
-            color: item.selectedVariant.color || "",
-          },
-        });
+        itemPrice = variant.price || product.price;
       } else {
-        if (product.stock < item.quantity) {
-          logger.warn(`❌ Insufficient stock`);
+        if (product.stock < quantity) {
           return res.status(400).json({
             success: false,
-            message: `Insufficient stock for ${product.name}.`,
+            message: `Insufficient stock for ${product.name}. Available: ${product.stock}`,
           });
         }
-
-        const itemPrice = product.price;
-        subtotal += itemPrice * item.quantity;
-
-        orderItems.push({
-          product: product._id,
-          name: product.name,
-          price: itemPrice,
-          quantity: item.quantity,
-          selectedVariant: {},
-        });
       }
+
+      subtotal += itemPrice * quantity;
+
+      orderItems.push({
+        product: product._id,
+        name: product.name,
+        price: itemPrice,
+        quantity,
+        selectedVariant: {
+          size: item.selectedVariant?.size || "",
+          color: item.selectedVariant?.color || "",
+        },
+      });
     }
 
+    // Calculate shipping
     const shippingCost = subtotal >= FREE_SHIPPING_THRESHOLD ? 0 : SHIPPING_FEE;
     const totalAmount = subtotal + shippingCost;
 
+    // Generate unique order number
     const orderNumber = generateOrderNumber();
 
-    // ✅ Create order with explicit user ID
-    const userId = req.user._id || req.user.id;
-
-    console.log("✅ Creating order with user ID:", userId);
-    console.log("✅ User ID type:", typeof userId);
-
+    // ✅ Create order with consistent user ID
     const order = await Order.create({
       orderNumber,
-      user: userId, // ✅ Use _id first, fallback to id
+      user: req.user.id,
       items: orderItems,
       subtotal,
       shippingCost,
       totalAmount,
-      shippingAddress,
+      shippingAddress: {
+        street: shippingAddress.street || "",
+        city: shippingAddress.city || "",
+        county: shippingAddress.county || "",
+        postalCode: shippingAddress.postalCode || "",
+        phone: shippingAddress.phone,
+      },
       notes: notes || "",
       status: "pending",
-      timeline: [{ status: "pending", note: "Order created" }],
+      timeline: [
+        {
+          status: "pending",
+          timestamp: new Date(),
+          note: "Order created",
+        },
+      ],
     });
 
-    // ✅ Log the created order
-    console.log("✅ ORDER CREATED:");
-    console.log("  Order ID:", order._id);
-    console.log("  Order Number:", order.orderNumber);
-    console.log("  Order User ID:", order.user);
-    console.log("  Order User ID type:", typeof order.user);
-    console.log("========================================");
+    logger.info(`✅ Order created: ${orderNumber}`, {
+      orderId: order._id,
+      userId: req.user.id,
+      total: totalAmount,
+    });
 
-    logger.info(`✅ Order created: ${orderNumber}`);
-
-    return res.status(201).json({ success: true, data: order });
+    return res.status(201).json({
+      success: true,
+      message: "Order created successfully",
+      data: order,
+    });
   } catch (error) {
-    console.error("❌ Create order error:", error);
     logger.error("❌ Create order error:", error);
-    return res.status(500).json({ success: false, message: "Server error" });
+    return res.status(500).json({
+      success: false,
+      message: "Error creating order",
+    });
   }
 };
 
+// @desc    Get current user's orders
+// @route   GET /api/orders/my
+// @access  Private
 const getMyOrders = async (req, res) => {
   try {
     const orders = await Order.find({ user: req.user.id })
-      .populate("items.product", "name images")
-      .sort({ createdAt: -1 });
-    res.json({ success: true, count: orders.length, data: orders });
+      .populate("items.product", "name images price")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    res.json({
+      success: true,
+      count: orders.length,
+      data: orders,
+    });
   } catch (error) {
     logger.error("Get my orders error:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Error fetching orders",
+    });
   }
 };
 
+// @desc    Get single order by ID
+// @route   GET /api/orders/:id
+// @access  Private (owner or admin)
 const getOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id)
-      .populate("items.product", "name images slug")
-      .populate("user", "email phone");
-    if (!order)
-      return res
-        .status(404)
-        .json({ success: false, message: "Order not found" });
+      .populate("items.product", "name images slug price")
+      .populate("user", "email phone name");
 
-    // ✅ Fix: Compare both id and _id
-    const orderUserId = order.user._id.toString();
-    const requestUserId = req.user.id?.toString() || req.user._id?.toString();
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
 
-    console.log("🔍 Order access check:");
-    console.log("  Order user ID:", orderUserId);
-    console.log("  Request user ID:", requestUserId);
-    console.log("  Match:", orderUserId === requestUserId);
+    // ✅ Authorization: Order owner or admin
+    const orderUserId = order.user._id?.toString() || order.user.toString();
+    const requestUserId = (req.user.id || req.user._id).toString();
 
     if (orderUserId !== requestUserId && req.user.role !== "admin") {
-      return res
-        .status(403)
-        .json({ success: false, message: "Not authorized" });
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized to view this order",
+      });
     }
-    res.json({ success: true, data: order });
+
+    res.json({
+      success: true,
+      data: order,
+    });
   } catch (error) {
     logger.error("Get order error:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Error fetching order",
+    });
   }
 };
 
+// @desc    Cancel order
+// @route   PUT /api/orders/:id/cancel
+// @access  Private (owner or admin)
 const cancelOrder = async (req, res) => {
   try {
     const order = await Order.findById(req.params.id);
-    if (!order)
-      return res
-        .status(404)
-        .json({ success: false, message: "Order not found" });
 
-    // ✅ Fix: Compare both id and _id
-    const orderUserId = order.user.toString();
-    const requestUserId = req.user.id?.toString() || req.user._id?.toString();
-
-    if (orderUserId !== requestUserId)
-      return res
-        .status(403)
-        .json({ success: false, message: "Not authorized" });
-
-    if (!["pending", "processing"].includes(order.status)) {
-      return res.status(400).json({ success: false, message: "Cannot cancel" });
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
     }
+
+    // ✅ Authorization check
+    const orderUserId = order.user.toString();
+    const requestUserId = (req.user.id || req.user._id).toString();
+
+    if (orderUserId !== requestUserId && req.user.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized",
+      });
+    }
+
+    // ✅ Check if order can be cancelled
+    if (!order.canCancel()) {
+      return res.status(400).json({
+        success: false,
+        message: `Cannot cancel order with status: ${order.status}`,
+      });
+    }
+
     order.status = "cancelled";
-    order.timeline.push({
-      status: "cancelled",
-      note: "Order cancelled by user",
-    });
     await order.save();
-    res.json({ success: true, data: order });
+
+    logger.info(`✅ Order cancelled: ${order.orderNumber}`);
+
+    res.json({
+      success: true,
+      message: "Order cancelled",
+      data: order,
+    });
   } catch (error) {
-    logger.error("Cancel error:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    logger.error("Cancel order error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error cancelling order",
+    });
   }
 };
 
+// @desc    Get all orders (Admin only)
+// @route   GET /api/orders
+// @access  Private/Admin
 const getOrders = async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
-    const query = status ? { status } : {};
+    const { status, page = 1, limit = 20, search } = req.query;
+    const query = {};
+
+    if (status) {
+      query.status = status;
+    }
+
+    if (search) {
+      query.$or = [
+        { orderNumber: { $regex: search, $options: "i" } },
+        { "shippingAddress.phone": { $regex: search, $options: "i" } },
+      ];
+    }
+
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    const orders = await Order.find(query)
-      .populate("user", "email phone")
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit));
-    const total = await Order.countDocuments(query);
-    res.json({ success: true, count: orders.length, total, data: orders });
+
+    const [orders, total] = await Promise.all([
+      Order.find(query)
+        .populate("user", "email phone name")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Order.countDocuments(query),
+    ]);
+
+    res.json({
+      success: true,
+      count: orders.length,
+      total,
+      page: parseInt(page),
+      pages: Math.ceil(total / parseInt(limit)),
+      data: orders,
+    });
   } catch (error) {
     logger.error("Get orders error:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({
+      success: false,
+      message: "Error fetching orders",
+    });
   }
 };
 
+// @desc    Update order status (Admin only)
+// @route   PUT /api/orders/:id/status
+// @access  Private/Admin
 const updateOrderStatus = async (req, res) => {
   try {
     const { status, note } = req.body;
+
+    if (!status) {
+      return res.status(400).json({
+        success: false,
+        message: "Status is required",
+      });
+    }
+
     const order = await Order.findById(req.params.id);
-    if (!order)
-      return res
-        .status(404)
-        .json({ success: false, message: "Order not found" });
 
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: "Order not found",
+      });
+    }
+
+    const previousStatus = order.status;
     order.status = status;
-    order.timeline.push({ status, note: note || `Order ${status}` });
 
-    if (status === "paid") {
+    // ✅ Deduct stock when order is marked as paid
+    if (status === "paid" && previousStatus !== "paid") {
       for (const item of order.items) {
         const product = await Product.findById(item.product);
         if (product) {
@@ -301,19 +368,42 @@ const updateOrderStatus = async (req, res) => {
                 v.size === item.selectedVariant.size &&
                 v.color === item.selectedVariant.color,
             );
-            if (variant) variant.stock -= item.quantity;
+            if (variant) {
+              variant.stock = Math.max(0, variant.stock - item.quantity);
+            }
           } else {
-            product.stock -= item.quantity;
+            product.stock = Math.max(0, product.stock - item.quantity);
           }
           await product.save();
         }
       }
+
+      // Update payment status
+      if (order.payment) {
+        order.payment.paymentStatus = "completed";
+        order.payment.paidAt = new Date();
+      }
+
+      logger.info(`📦 Stock deducted for order: ${order.orderNumber}`);
     }
+
     await order.save();
-    res.json({ success: true, data: order });
+
+    logger.info(
+      `✅ Order ${order.orderNumber} status: ${previousStatus} → ${status}`,
+    );
+
+    res.json({
+      success: true,
+      message: "Order status updated",
+      data: order,
+    });
   } catch (error) {
-    logger.error("Update status error:", error);
-    res.status(500).json({ success: false, message: "Server error" });
+    logger.error("Update order status error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Error updating order status",
+    });
   }
 };
 
