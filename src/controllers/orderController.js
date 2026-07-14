@@ -16,6 +16,18 @@ const createOrder = async (req, res) => {
   try {
     const { items, shippingAddress, notes } = req.body;
 
+    // ✅ EXTENSIVE DEBUG LOGGING
+    console.log("========================================");
+    console.log("📝 ORDER CREATION - FULL DEBUG:");
+    console.log("  req.user:", JSON.stringify(req.user, null, 2));
+    console.log("  req.user.id:", req.user.id);
+    console.log("  req.user._id:", req.user._id);
+    console.log("  req.user.email:", req.user.email);
+    console.log("  req.user.role:", req.user.role);
+    console.log("  Type of req.user.id:", typeof req.user.id);
+    console.log("  Type of req.user._id:", typeof req.user._id);
+    console.log("========================================");
+
     logger.info("📥 Received order request");
     logger.debug("  Items:", JSON.stringify(items, null, 2));
     logger.debug("  Shipping Address:", shippingAddress);
@@ -136,9 +148,15 @@ const createOrder = async (req, res) => {
 
     const orderNumber = generateOrderNumber();
 
+    // ✅ Create order with explicit user ID
+    const userId = req.user._id || req.user.id;
+
+    console.log("✅ Creating order with user ID:", userId);
+    console.log("✅ User ID type:", typeof userId);
+
     const order = await Order.create({
       orderNumber,
-      user: req.user.id,
+      user: userId, // ✅ Use _id first, fallback to id
       items: orderItems,
       subtotal,
       shippingCost,
@@ -149,20 +167,19 @@ const createOrder = async (req, res) => {
       timeline: [{ status: "pending", note: "Order created" }],
     });
 
-    logger.info(`✅ Order created: ${orderNumber}`);
+    // ✅ Log the created order
+    console.log("✅ ORDER CREATED:");
+    console.log("  Order ID:", order._id);
+    console.log("  Order Number:", order.orderNumber);
+    console.log("  Order User ID:", order.user);
+    console.log("  Order User ID type:", typeof order.user);
+    console.log("========================================");
 
-    /* // TEMPORARILY DISABLED EMAIL TO STOP CRASHING
-    setImmediate(async () => {
-      try {
-        await sendEmail({...});
-      } catch (emailError) {
-        logger.error("❌ Failed to send email:", emailError.message);
-      }
-    });
-    */
+    logger.info(`✅ Order created: ${orderNumber}`);
 
     return res.status(201).json({ success: true, data: order });
   } catch (error) {
+    console.error("❌ Create order error:", error);
     logger.error("❌ Create order error:", error);
     return res.status(500).json({ success: false, message: "Server error" });
   }
@@ -189,10 +206,17 @@ const getOrder = async (req, res) => {
       return res
         .status(404)
         .json({ success: false, message: "Order not found" });
-    if (
-      order.user._id.toString() !== req.user.id &&
-      req.user.role !== "admin"
-    ) {
+
+    // ✅ Fix: Compare both id and _id
+    const orderUserId = order.user._id.toString();
+    const requestUserId = req.user.id?.toString() || req.user._id?.toString();
+
+    console.log("🔍 Order access check:");
+    console.log("  Order user ID:", orderUserId);
+    console.log("  Request user ID:", requestUserId);
+    console.log("  Match:", orderUserId === requestUserId);
+
+    if (orderUserId !== requestUserId && req.user.role !== "admin") {
       return res
         .status(403)
         .json({ success: false, message: "Not authorized" });
@@ -211,10 +235,16 @@ const cancelOrder = async (req, res) => {
       return res
         .status(404)
         .json({ success: false, message: "Order not found" });
-    if (order.user.toString() !== req.user.id)
+
+    // ✅ Fix: Compare both id and _id
+    const orderUserId = order.user.toString();
+    const requestUserId = req.user.id?.toString() || req.user._id?.toString();
+
+    if (orderUserId !== requestUserId)
       return res
         .status(403)
         .json({ success: false, message: "Not authorized" });
+
     if (!["pending", "processing"].includes(order.status)) {
       return res.status(400).json({ success: false, message: "Cannot cancel" });
     }
