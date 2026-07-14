@@ -58,7 +58,6 @@ const initiatePayment = async (req, res) => {
 
     if (!result.success) {
       console.error("❌ Payment initiation failed:", result.message);
-      console.error("❌ Error details:", result.error);
       return res.status(500).json({
         success: false,
         message: result.message || "Failed to initiate payment",
@@ -89,7 +88,6 @@ const initiatePayment = async (req, res) => {
     });
   } catch (error) {
     console.error("❌ Initiate payment error:", error);
-    console.error("❌ Stack:", error.stack);
     res.status(500).json({
       success: false,
       message: error.message || "Server error",
@@ -99,26 +97,29 @@ const initiatePayment = async (req, res) => {
 
 // Handle IntaSend webhook
 const handleWebhook = async (req, res) => {
-  try {
-    console.log("📥 Webhook received:");
-    console.log("Body:", JSON.stringify(req.body, null, 2));
+  // Respond immediately to avoid timeout
+  res.status(200).send("OK");
 
-    const { invoice_id, state, api_ref, challenge } = req.body;
+  try {
+    console.log("📥 Webhook received:", JSON.stringify(req.body, null, 2));
+
+    /* 
+       TODO: SECURITY IMPLEMENTATION
+       Use crypto.createHmac('sha256', process.env.INTASEND_WEBHOOK_SECRET)
+       to verify req.headers['x-intasend-signature'] matches the request body.
+    */
+
+    const { invoice_id, api_ref, challenge } = req.body;
 
     if (challenge) {
       console.log("🔑 Webhook challenge received:", challenge);
-      return res.status(200).json({ challenge });
+      return;
     }
-
-    // ✅ Respond immediately
-    res.status(200).send("OK");
 
     if (!invoice_id || !api_ref) {
       console.error("❌ Missing invoice_id or api_ref");
       return;
     }
-
-    console.log(`📦 Processing: invoice=${invoice_id}, api_ref=${api_ref}`);
 
     const order = await Order.findOne({ orderNumber: api_ref });
 
@@ -139,8 +140,6 @@ const handleWebhook = async (req, res) => {
       console.error("❌ Status check failed:", statusCheck.message);
       return;
     }
-
-    console.log(`🔍 Payment status: ${statusCheck.status}`);
 
     if (statusCheck.isComplete) {
       order.status = "paid";
