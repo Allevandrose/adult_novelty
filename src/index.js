@@ -25,7 +25,7 @@ app.set("trust proxy", 1);
 // Connect to MongoDB
 connectDB();
 
-// ✅ FIX: Use morgan for request logging
+// Use morgan for request logging
 app.use(
   morgan("combined", {
     stream: { write: (message) => logger.info(message.trim()) },
@@ -54,7 +54,7 @@ app.use(
   }),
 );
 
-// ✅ FIXED CORS - More permissive for development
+// CORS
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5000",
@@ -65,15 +65,11 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow requests with no origin (like mobile apps or curl requests)
       if (!origin) return callback(null, true);
-
-      // Check if origin is allowed
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       } else {
         logger.warn(`CORS blocked origin: ${origin}`);
-        // Return false instead of error to avoid 403
         return callback(null, false);
       }
     },
@@ -85,7 +81,7 @@ app.use(
       "X-Requested-With",
       "Accept",
       "Origin",
-      "Access-Control-Allow-Origin",
+      "X-IntaSend-Signature",
     ],
     exposedHeaders: ["Content-Length", "X-Requested-With"],
     optionsSuccessStatus: 200,
@@ -112,10 +108,18 @@ const apiLimiter = rateLimit({
 
 app.use("/api", apiLimiter);
 
-app.use(express.json({ limit: "10mb" }));
+// ✅ IMPORTANT: Regular JSON parsing for all routes EXCEPT webhook
+app.use((req, res, next) => {
+  // Skip JSON parsing for webhook route - it needs raw body
+  if (req.path === "/api/payments/webhook" && req.method === "POST") {
+    return next();
+  }
+  express.json({ limit: "10mb" })(req, res, next);
+});
+
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// ✅ FIX: Serve static files for uploads
+// Serve static files for uploads
 app.use("/uploads", express.static(path.join(__dirname, "../public/uploads")));
 
 // Routes
@@ -136,7 +140,7 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Error handling middleware (should be last)
+// Error handling middleware
 const { errorHandler } = require("./middleware/errorHandler");
 app.use(errorHandler);
 

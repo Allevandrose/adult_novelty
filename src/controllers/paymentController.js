@@ -158,17 +158,36 @@ const initiatePayment = async (req, res) => {
 
 /**
  * Handle IntaSend webhook
+ * ✅ Uses raw body Buffer for HMAC-SHA256 verification
  * IntaSend calls this endpoint when payment status changes
  * @route POST /api/payments/webhook
  */
 const handleWebhook = async (req, res) => {
   const startTime = Date.now();
+
   logger.info("📥 Webhook received");
 
-  // ✅ Verify webhook signature
+  // ✅ req.body is a raw Buffer (thanks to express.raw() middleware)
+  const rawBody = req.body;
+
+  // Get signature from multiple possible header names
   const signature =
-    req.headers["x-intasend-signature"] || req.headers["signature"];
-  const isValid = intaSendService.verifyWebhookSignature(req.body, signature);
+    req.headers["x-intasend-signature"] ||
+    req.headers["X-IntaSend-Signature"] ||
+    req.headers["signature"] ||
+    req.headers["Signature"] ||
+    "";
+
+  logger.debug("Webhook details:", {
+    hasSignature: !!signature,
+    signaturePreview: signature ? signature.substring(0, 20) + "..." : "none",
+    bodyType: typeof rawBody,
+    isBuffer: Buffer.isBuffer(rawBody),
+    bodyLength: rawBody ? rawBody.length : 0,
+  });
+
+  // ✅ Verify webhook signature using raw body (Buffer)
+  const isValid = intaSendService.verifyWebhookSignature(rawBody, signature);
 
   if (!isValid) {
     logger.warn("❌ Invalid webhook signature");
@@ -178,17 +197,38 @@ const handleWebhook = async (req, res) => {
     });
   }
 
-  // Handle challenge verification (IntaSend sends this during setup)
-  if (req.body.challenge) {
+  // ✅ Parse the raw body Buffer to JSON object
+  let parsedBody;
+  try {
+    parsedBody = Buffer.isBuffer(rawBody)
+      ? JSON.parse(rawBody.toString("utf8"))
+      : rawBody;
+  } catch (parseError) {
+    logger.error("❌ Failed to parse webhook body:", parseError);
+    return res.status(400).json({
+      success: false,
+      message: "Invalid JSON body",
+    });
+  }
+
+  logger.debug("Parsed webhook body:", {
+    api_ref: parsedBody.api_ref,
+    state: parsedBody.state,
+    invoice_id: parsedBody.invoice_id,
+  });
+
+  // Handle challenge verification (IntaSend sends this during webhook setup)
+  if (parsedBody.challenge) {
     logger.info("🔑 Webhook challenge verification");
-    return res.status(200).json({ challenge: req.body.challenge });
+    return res.status(200).json({ challenge: parsedBody.challenge });
   }
 
   // ✅ Respond immediately to prevent timeout, then process async
   res.status(200).json({ received: true });
 
+  // Process webhook asynchronously
   try {
-    await processPaymentWebhook(req.body);
+    await processPaymentWebhook(parsedBody);
     logger.info(`✅ Webhook processed in ${Date.now() - startTime}ms`);
   } catch (error) {
     logger.error("❌ Webhook processing error:", error);
@@ -290,13 +330,14 @@ const processPaymentWebhook = async (data) => {
 
 /**
  * Helper: Deduct stock from products after successful payment
+ * ✅ Uses non-empty field matching for variants
  */
 const deductStock = async (order) => {
   for (const item of order.items) {
     const product = await Product.findById(item.product);
     if (!product) continue;
 
-    // ✅ FIX: Match variant by non-empty fields only
+    // ✅ Match variant by non-empty fields only
     if (item.selectedVariant?.size || item.selectedVariant?.color) {
       const variant = product.variants.find((v) => {
         const sizeMatch =
@@ -309,13 +350,13 @@ const deductStock = async (order) => {
       if (variant) {
         variant.stock = Math.max(0, variant.stock - item.quantity);
         logger.debug(
-          `📦 Variant stock: ${product.name} (${variant.color || ""} ${variant.size || ""}) ${variant.stock + item.quantity} → ${variant.stock}`,
+          `📦 Variant stock deducted: ${product.name} (${variant.color || ""} ${variant.size || ""}) ${variant.stock + item.quantity} → ${variant.stock}`,
         );
       }
     } else {
       product.stock = Math.max(0, product.stock - item.quantity);
       logger.debug(
-        `📦 Product stock: ${product.name} ${product.stock + item.quantity} → ${product.stock}`,
+        `📦 Product stock deducted: ${product.name} ${product.stock + item.quantity} → ${product.stock}`,
       );
     }
 

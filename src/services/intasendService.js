@@ -6,7 +6,6 @@ class IntaSendService {
   constructor() {
     this.publishableKey = process.env.INTASEND_PUBLISHABLE_KEY;
     this.secretKey = process.env.INTASEND_SECRET_KEY;
-    // ✅ 'true' for test, 'false' for production
     this.isTest = process.env.INTASEND_ENVIRONMENT === "test";
     this.webhookSecret = process.env.INTASEND_WEBHOOK_SECRET;
 
@@ -19,11 +18,10 @@ class IntaSendService {
 
     try {
       if (this.publishableKey && this.secretKey) {
-        // ✅ Match official SDK initialization
         this.intasend = new IntaSend(
           this.publishableKey,
           this.secretKey,
-          this.isTest, // true = test mode, false = production
+          this.isTest,
         );
         this.collection = this.intasend.collection();
         logger.info("✅ IntaSend initialized successfully");
@@ -36,14 +34,15 @@ class IntaSendService {
   }
 
   /**
-   * ✅ Checkout Link - Universal payment (M-Pesa, Card, etc.)
-   * Returns a URL to redirect the customer to
+   * Create payment checkout session
    */
   async createCheckout(orderData) {
     try {
       if (!this.collection) {
         throw new Error("IntaSend not initialized - check your API keys");
       }
+
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
 
       const chargeData = {
         first_name: orderData.firstName || "Customer",
@@ -52,10 +51,10 @@ class IntaSendService {
         phone_number: orderData.phoneNumber || "",
         amount: orderData.amount,
         currency: "KES",
-        api_ref: orderData.orderId, // Your unique order reference
+        api_ref: orderData.orderId,
         redirect_url:
           orderData.redirectUrl ||
-          `${process.env.FRONTEND_URL || "http://localhost:5173"}/payment-success?order=${orderData.orderId}`,
+          `${frontendUrl}/payment-success?order=${orderData.orderId}`,
       };
 
       logger.info("📤 Creating IntaSend Checkout:", {
@@ -64,12 +63,8 @@ class IntaSendService {
         email: chargeData.email,
       });
 
-      // ✅ Match official SDK: collection.charge()
       const response = await this.collection.charge(chargeData);
 
-      logger.info("📥 IntaSend Response:", JSON.stringify(response, null, 2));
-
-      // ✅ According to docs, the response contains 'url' directly
       const paymentUrl = response.url;
 
       if (!paymentUrl) {
@@ -77,7 +72,6 @@ class IntaSendService {
         throw new Error("Failed to get payment URL from IntaSend");
       }
 
-      // Extract invoice ID from response
       const invoiceId =
         response.invoice_id || response.invoice?.id || response.id;
 
@@ -105,8 +99,7 @@ class IntaSendService {
   }
 
   /**
-   * ✅ Direct M-Pesa STK Push (No checkout page)
-   * Sends STK prompt directly to user's phone
+   * Direct M-Pesa STK Push
    */
   async mpesaStkPush(paymentData) {
     try {
@@ -124,16 +117,8 @@ class IntaSendService {
         host: process.env.FRONTEND_URL || "http://localhost:5173",
       };
 
-      logger.info("📤 Sending M-Pesa STK Push:", {
-        api_ref: stkData.api_ref,
-        amount: stkData.amount,
-        phone: stkData.phone_number,
-      });
-
-      // ✅ Match official SDK: collection.mpesaStkPush()
+      logger.info("📤 Sending M-Pesa STK Push");
       const response = await this.collection.mpesaStkPush(stkData);
-
-      logger.info("📥 STK Push Response:", JSON.stringify(response, null, 2));
 
       return {
         success: true,
@@ -142,10 +127,7 @@ class IntaSendService {
         response,
       };
     } catch (error) {
-      logger.error("❌ STK Push error:", {
-        message: error.message,
-        response: error.response?.data || error.response,
-      });
+      logger.error("❌ STK Push error:", error.message);
 
       return {
         success: false,
@@ -156,8 +138,7 @@ class IntaSendService {
   }
 
   /**
-   * ✅ Check payment status
-   * Use this to verify payment in webhook or manually
+   * Check payment status
    */
   async checkStatus(invoiceId) {
     try {
@@ -166,13 +147,8 @@ class IntaSendService {
       }
 
       logger.info(`🔍 Checking status for invoice: ${invoiceId}`);
-
-      // ✅ Match official SDK: collection.status()
       const response = await this.collection.status(invoiceId);
 
-      logger.info("📊 Status Response:", JSON.stringify(response, null, 2));
-
-      // Extract state from response
       const state = response.invoice?.state || response.state || "UNKNOWN";
 
       const isComplete = ["COMPLETE", "COMPLETED"].includes(
@@ -199,29 +175,72 @@ class IntaSendService {
   }
 
   /**
-   * Verify webhook signature
+   * ✅ PROPER HMAC-SHA256 Webhook Verification
+   *
+   * IntaSend signs the raw request body with your webhook secret
+   * using HMAC-SHA256 and sends the signature in a header.
+   *
+   * @param {Buffer|string} rawBody - The raw request body (must be a Buffer or raw string, NOT parsed JSON)
+   * @param {string} signature - The signature from the X-IntaSend-Signature header
+   * @returns {boolean} - True if signature is valid
    */
-  verifyWebhookSignature(body, signature) {
+  verifyWebhookSignature(rawBody, signature) {
     try {
+      // In development without secret, allow all
       if (!this.webhookSecret) {
         logger.warn("⚠️ No webhook secret configured, skipping verification");
         return true;
       }
 
       if (!signature) {
-        logger.error("❌ No signature in webhook");
+        logger.error("❌ No signature provided in webhook headers");
         return false;
       }
 
-      const expectedSignature = crypto
-        .createHmac("sha256", this.webhookSecret)
-        .update(JSON.stringify(body))
-        .digest("hex");
+      if (!rawBody) {
+        logger.error("❌ No body provided for signature verification");
+        return false;
+      }
 
-      const isValid = signature === expectedSignature;
-      logger.info(`🔐 Webhook: ${isValid ? "✅ Valid" : "❌ Invalid"}`);
+      // ✅ Convert body to string if it's a Buffer
+      const bodyString = Buffer.isBuffer(rawBody)
+        ? rawBody.toString("utf8")
+        : typeof rawBody === "string"
+          ? rawBody
+          : JSON.stringify(rawBody);
 
-      return isValid;
+      // ✅ Create HMAC-SHA256 hash of the raw body using webhook secret
+      const hmac = crypto.createHmac("sha256", this.webhookSecret);
+      const computedSignature = hmac.update(bodyString).digest("hex");
+
+      logger.debug("🔐 Webhook Signature Verification:", {
+        received: signature?.substring(0, 20) + "...",
+        computed: computedSignature?.substring(0, 20) + "...",
+        bodyLength: bodyString.length,
+      });
+
+      // ✅ Use timing-safe comparison to prevent timing attacks
+      try {
+        const signatureBuffer = Buffer.from(signature, "utf8");
+        const computedBuffer = Buffer.from(computedSignature, "utf8");
+
+        const isValid =
+          signatureBuffer.length === computedBuffer.length &&
+          crypto.timingSafeEqual(signatureBuffer, computedBuffer);
+
+        logger.info(
+          `🔐 Webhook verification: ${isValid ? "✅ Valid" : "❌ Invalid"}`,
+        );
+
+        if (!isValid) {
+          logger.warn("Signature mismatch - request may be fraudulent");
+        }
+
+        return isValid;
+      } catch (compareError) {
+        logger.error("❌ Signature comparison error:", compareError);
+        return false;
+      }
     } catch (error) {
       logger.error("❌ Signature verification error:", error);
       return false;
