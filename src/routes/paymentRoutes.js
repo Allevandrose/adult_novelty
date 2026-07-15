@@ -9,10 +9,11 @@ const {
 const auth = require("../middleware/auth");
 const { isAdmin } = require("../middleware/role");
 
-// ✅ Webhook route uses raw body parser for HMAC verification
+// ✅ Webhook route - MUST use raw parser to get the raw body for signature verification
+// This is the CORRECT place to apply the raw parser, NOT in index.js
 router.post(
   "/webhook",
-  express.raw({ type: "application/json" }), // Get raw buffer
+  express.raw({ type: "application/json" }),
   handleWebhook,
 );
 

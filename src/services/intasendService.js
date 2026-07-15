@@ -24,6 +24,7 @@ class IntaSendService {
           this.isTest,
         );
         this.collection = this.intasend.collection();
+        this.payouts = this.intasend.payouts();
         logger.info("✅ IntaSend initialized successfully");
       } else {
         logger.error("❌ IntaSend: Missing API keys");
@@ -244,6 +245,39 @@ class IntaSendService {
     } catch (error) {
       logger.error("❌ Signature verification error:", error);
       return false;
+    }
+  }
+
+  /**
+   * ✅ Generate test signature for webhook testing
+   */
+  generateTestSignature(rawBody) {
+    try {
+      if (!this.webhookSecret) {
+        logger.error(
+          "❌ Cannot generate signature: No webhook secret configured",
+        );
+        return null;
+      }
+
+      const bodyString = Buffer.isBuffer(rawBody)
+        ? rawBody.toString("utf8")
+        : typeof rawBody === "string"
+          ? rawBody
+          : JSON.stringify(rawBody);
+
+      const hmac = crypto.createHmac("sha256", this.webhookSecret);
+      hmac.update(bodyString);
+      const signature = hmac.digest("hex");
+
+      logger.debug("🔐 Generated test signature:", {
+        signature: signature.substring(0, 20) + "...",
+      });
+
+      return signature;
+    } catch (error) {
+      logger.error("❌ Test signature generation error:", error);
+      return null;
     }
   }
 }

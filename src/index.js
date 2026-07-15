@@ -27,14 +27,16 @@ app.set("trust proxy", 1);
 // Connect to MongoDB
 connectDB();
 
-// Request logging
+// --- MIDDLEWARE ---
+
+// 1. Request logging
 app.use(
   morgan("combined", {
     stream: { write: (message) => logger.info(message.trim()) },
   }),
 );
 
-// Compression
+// 2. Compression
 app.use(
   compression({
     level: 6,
@@ -46,7 +48,7 @@ app.use(
   }),
 );
 
-// Helmet security
+// 3. Helmet security
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: "cross-origin" },
@@ -56,7 +58,7 @@ app.use(
   }),
 );
 
-// CORS configuration
+// 4. CORS configuration
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5000",
@@ -87,7 +89,7 @@ app.use(
   }),
 );
 
-// General rate limiting (Excluded for webhook)
+// 5. Rate Limiting (Excluded for webhook)
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -101,21 +103,21 @@ app.use("/api", (req, res, next) => {
   apiLimiter(req, res, next);
 });
 
-// JSON parsing with exclusion for webhook
+// 6. Standard JSON parsing (Excluding webhook - handled at route level)
 app.use((req, res, next) => {
   if (req.originalUrl === "/api/payments/webhook") {
-    next();
-  } else {
-    express.json({ limit: "10mb" })(req, res, next);
+    // Webhook route handles its own raw body parsing
+    return next();
   }
+  express.json({ limit: "10mb" })(req, res, next);
 });
 
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// Static files
+// 7. Static files
 app.use("/uploads", express.static(path.join(__dirname, "../public/uploads")));
 
-// Routes
+// --- ROUTES ---
 app.use("/api/auth", authRoutes);
 app.use("/api/categories", categoryRoutes);
 app.use("/api/products", productRoutes);
@@ -129,10 +131,10 @@ app.get("/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
-// Error handling
+// --- ERROR HANDLING ---
 app.use(errorHandler);
 
-// Start server
+// --- START SERVER ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
