@@ -62,7 +62,7 @@ app.use(
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5000",
-  "https://intimacare.netlify.app",
+  "https://intimacare.onrender.com",
   "https://adult-novelty.onrender.com",
 ];
 
