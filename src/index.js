@@ -65,7 +65,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5000",
   "http://localhost:3000",
-  "https://intimacare.onrender.com", // ✅ Your NEW frontend (Render)
+  // "https://intimacare.onrender.com", // ✅ Your NEW frontend (Render)
   "https://intimacare.co.ke/",
   "https://adult-novelty.onrender.com", // ✅ Your backend
   /\.onrender\.com$/, // ✅ Any Render subdomain
