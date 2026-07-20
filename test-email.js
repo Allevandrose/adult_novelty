@@ -3,17 +3,15 @@ require("dotenv").config();
 
 async function testEmail() {
   try {
-    console.log("📧 Testing Gmail SMTP...");
-    console.log("📧 Email:", process.env.SMTP_USER);
-    console.log("📧 Password length:", process.env.SMTP_PASS?.length);
+    console.log("📧 Testing Resend SMTP...");
 
     const transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: parseInt(process.env.SMTP_PORT),
-      secure: false,
+      host: "smtp.resend.com",
+      port: 465, // Use 465 for SSL/TLS
+      secure: true, // Must be true for port 465
       auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
+        user: "resend", // Always use "resend" as the username
+        pass: process.env.SMTP_PASS, // Your new API key
       },
     });
 
@@ -23,22 +21,20 @@ async function testEmail() {
 
     // Send test email
     const info = await transporter.sendMail({
-      from: `"IntimaCare Test" <${process.env.SMTP_USER}>`,
-      to: "ibrahimmulei@gmail.com", // Your email
+      from: "onboarding@resend.dev", // Use this if you haven't verified a domain yet
+      to: "ibrahimmulei@gmail.com",
       subject: "✅ Test Email from IntimaCare",
       html: `
         <h1>Test Email</h1>
-        <p>If you're seeing this, Gmail SMTP is working correctly!</p>
+        <p>If you're seeing this, Resend SMTP is working correctly!</p>
         <p>Sent at: ${new Date().toLocaleString()}</p>
       `,
     });
 
     console.log("✅ Email sent successfully!");
     console.log("✅ Message ID:", info.messageId);
-    console.log("✅ Check your inbox!");
   } catch (error) {
-    console.error("❌ Error:", error);
-    console.error("❌ Error details:", error.message);
+    console.error("❌ Error:", error.message);
   }
 }
 

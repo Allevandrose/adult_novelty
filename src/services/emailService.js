@@ -13,29 +13,18 @@ const initializeTransporter = () => {
   try {
     logger.info("📧 Initializing email transporter...");
 
-    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
-      logger.error("❌ SMTP credentials not configured");
-      isInitializing = false;
-      return null;
-    }
-
+    // Resend requires these specific settings
     transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.gmail.com",
+      host: process.env.SMTP_HOST || "smtp.resend.com",
       port: parseInt(process.env.SMTP_PORT) || 587,
-      secure: false,
+      secure: false, // Must be false for port 587
       auth: {
-        user: process.env.SMTP_USER,
-        pass: process.env.SMTP_PASS,
+        user: process.env.SMTP_USER || "resend",
+        pass: process.env.SMTP_PASS, // Your new API key
       },
-      tls: {
-        rejectUnauthorized: process.env.NODE_ENV === "production",
-      },
-      connectionTimeout: 5000,
-      greetingTimeout: 5000,
-      socketTimeout: 5000,
+      connectionTimeout: 10000,
     });
 
-    // Don't await verification - let it happen in background
     transporter.verify((error, success) => {
       if (error) {
         logger.error("❌ Email transporter error:", error.message);
@@ -54,36 +43,26 @@ const initializeTransporter = () => {
   }
 };
 
-// ✅ FIX: Don't throw errors - return failure object
 exports.sendEmail = async ({ to, subject, html, text }) => {
   try {
-    if (!to) {
-      logger.warn("⚠️ No email recipient provided");
-      return { success: false, message: "No email recipient" };
-    }
-
-    logger.info(`📧 Sending email to: ${to}`);
+    if (!to) return { success: false, message: "No email recipient" };
 
     const transporter = initializeTransporter();
-
-    if (!transporter) {
-      logger.error("❌ Email transporter not initialized");
+    if (!transporter)
       return { success: false, message: "Transporter not initialized" };
-    }
 
     const mailOptions = {
-      from: process.env.SMTP_FROM || `"IntimaCare" <${process.env.SMTP_USER}>`,
+      // Must use your verified Resend email address here
+      from: process.env.SMTP_FROM || "onboarding@resend.dev",
       to,
-      subject: subject || "IntimaCare Notification",
-      html: html || text || "Thank you for your order.",
-      text: text || "Thank you for your order.",
+      subject: subject || "Notification",
+      html: html || text,
+      text: text,
     };
 
     const info = await transporter.sendMail(mailOptions);
-    logger.info(`✅ Email sent successfully to: ${to}`);
     return { success: true, messageId: info.messageId };
   } catch (error) {
-    // ✅ DON'T THROW - just log and return failure
     logger.error(`❌ Email send error to ${to}:`, error.message);
     return { success: false, message: error.message };
   }
