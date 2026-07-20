@@ -58,22 +58,41 @@ app.use(
   }),
 );
 
-// 4. CORS configuration
+// ============================================
+// ✅ COMPLETE FIXED CORS CONFIGURATION
+// ============================================
 const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5000",
-  "https://intimacare.onrender.com",
-  "https://adult-novelty.onrender.com",
+  "http://localhost:3000",
+  "https://intimacare.onrender.com", // ✅ Your NEW frontend (Render)
+  "https://adult-novelty.onrender.com", // ✅ Your backend
+  /\.onrender\.com$/, // ✅ Any Render subdomain
 ];
 
+// ✅ CORS middleware
 app.use(
   cors({
     origin: function (origin, callback) {
-      if (!origin || allowedOrigins.includes(origin)) {
+      // Allow requests with no origin (like mobile apps or curl)
+      if (!origin) {
         return callback(null, true);
       }
-      logger.warn(`CORS blocked origin: ${origin}`);
-      return callback(null, false);
+
+      // Check if origin is allowed
+      const isAllowed = allowedOrigins.some((allowed) => {
+        if (allowed instanceof RegExp) {
+          return allowed.test(origin);
+        }
+        return allowed === origin;
+      });
+
+      if (isAllowed) {
+        return callback(null, true);
+      }
+
+      logger.warn(`❌ CORS blocked origin: ${origin}`);
+      return callback(new Error(`CORS blocked: ${origin}`), false);
     },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
@@ -84,12 +103,17 @@ app.use(
       "Accept",
       "Origin",
       "X-IntaSend-Signature",
+      "x-intasend-signature",
     ],
     exposedHeaders: ["Content-Length", "X-Requested-With"],
+    maxAge: 86400, // 24 hours
   }),
 );
 
-// 5. Rate Limiting (Excluded for webhook)
+// ✅ Handle OPTIONS preflight requests
+app.options("*", cors());
+
+// 4. Rate Limiting (Excluded for webhook)
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -103,10 +127,9 @@ app.use("/api", (req, res, next) => {
   apiLimiter(req, res, next);
 });
 
-// 6. Standard JSON parsing (Excluding webhook - handled at route level)
+// 5. Standard JSON parsing (Excluding webhook - handled at route level)
 app.use((req, res, next) => {
   if (req.originalUrl === "/api/payments/webhook") {
-    // Webhook route handles its own raw body parsing
     return next();
   }
   express.json({ limit: "10mb" })(req, res, next);
@@ -114,8 +137,39 @@ app.use((req, res, next) => {
 
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// 7. Static files
+// 6. Static files
 app.use("/uploads", express.static(path.join(__dirname, "../public/uploads")));
+
+// ✅ Health check with CORS info
+app.get("/health", (req, res) => {
+  const origin = req.headers.origin || "unknown";
+  res.json({
+    status: "OK",
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || "development",
+    cors: {
+      enabled: true,
+      allowedOrigins: allowedOrigins
+        .map((o) => (o instanceof RegExp ? o.toString() : o))
+        .filter((o) => typeof o === "string"),
+      requestOrigin: origin,
+      isAllowed: allowedOrigins.some((allowed) => {
+        if (allowed instanceof RegExp) return allowed.test(origin);
+        return allowed === origin;
+      }),
+    },
+  });
+});
+
+// ✅ CORS test endpoint
+app.get("/api/test-cors", (req, res) => {
+  res.json({
+    success: true,
+    message: "CORS is working! ✅",
+    origin: req.headers.origin || "unknown",
+    method: req.method,
+  });
+});
 
 // --- ROUTES ---
 app.use("/api/auth", authRoutes);
@@ -126,9 +180,12 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/cart", cartRoutes);
 app.use("/api/admin", adminRoutes);
 
-// Health check
-app.get("/health", (req, res) => {
-  res.json({ status: "OK", timestamp: new Date().toISOString() });
+// ✅ 404 handler
+app.use((req, res) => {
+  res.status(404).json({
+    success: false,
+    message: `Route ${req.originalUrl} not found`,
+  });
 });
 
 // --- ERROR HANDLING ---
@@ -138,6 +195,12 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   logger.info(`🚀 Server running on port ${PORT}`);
+  logger.info(`📡 Allowed origins:`);
+  allowedOrigins.forEach((origin) => {
+    if (typeof origin === "string") {
+      logger.info(`   - ${origin}`);
+    }
+  });
 });
 
 module.exports = app;
