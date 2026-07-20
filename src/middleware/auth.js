@@ -40,7 +40,33 @@ const auth = async (req, res, next) => {
     try {
       decoded = jwt.verify(token, process.env.JWT_SECRET);
     } catch (jwtError) {
+      // ✅ FIX: For logout, allow expired tokens
       if (jwtError.name === "TokenExpiredError") {
+        // Check if this is the logout route
+        const isLogoutRoute =
+          req.originalUrl && req.originalUrl.includes("/auth/logout");
+
+        if (isLogoutRoute) {
+          // Try to decode the token without verification to get user ID
+          try {
+            const payload = jwt.decode(token);
+            if (payload && payload.id) {
+              // Allow logout even with expired token
+              req.user = {
+                id: payload.id,
+                _id: payload.id,
+              };
+              req._isExpiredToken = true;
+              logger.debug(
+                `⚠️ Allowing logout with expired token for user: ${payload.id}`,
+              );
+              return next();
+            }
+          } catch (decodeError) {
+            // If we can't decode, fall through to error
+          }
+        }
+
         return res.status(401).json({
           success: false,
           message: "Token expired",

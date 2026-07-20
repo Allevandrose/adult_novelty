@@ -2,6 +2,7 @@ const User = require("../models/User");
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
 const { sendEmail } = require("../services/emailService");
+const bcrypt = require("bcryptjs"); // ✅ MOVED TO TOP
 const logger = require("../utils/logger");
 
 // ✅ FIX: Make Redis truly optional
@@ -529,22 +530,27 @@ exports.resetPassword = async (req, res) => {
 // @access  Private
 exports.logout = async (req, res) => {
   try {
-    deleteCache(`session:${req.user.id}`).catch((err) =>
-      logger.warn("Failed to clear session cache:", err.message),
-    );
+    // ✅ If user exists, clear session cache
+    if (req.user && req.user.id) {
+      try {
+        await deleteCache(`session:${req.user.id}`);
+        logger.info(`✅ User logged out: ${req.user.id}`);
+      } catch (cacheError) {
+        logger.warn("Failed to clear session cache:", cacheError.message);
+      }
+    }
 
+    // ✅ Always return success - frontend handles local cleanup
     res.json({
       success: true,
       message: "Logged out successfully",
     });
   } catch (error) {
     logger.error("Logout error:", error);
-    res.status(500).json({
-      success: false,
-      message: "Error logging out",
+    // ✅ Even on error, return success so frontend doesn't get confused
+    res.json({
+      success: true,
+      message: "Logged out successfully",
     });
   }
 };
-
-// ✅ FIX: Add bcrypt require at top
-const bcrypt = require("bcryptjs");
