@@ -1,3 +1,5 @@
+// routes/paymentRoutes.js
+
 const express = require("express");
 const router = express.Router();
 const {
@@ -9,8 +11,7 @@ const {
 const auth = require("../middleware/auth");
 const { isAdmin } = require("../middleware/role");
 
-// ✅ Webhook route - MUST use raw parser to get the raw body for signature verification
-// This is the CORRECT place to apply the raw parser, NOT in index.js
+// ✅ Webhook route - MUST use raw parser for signature verification
 router.post(
   "/webhook",
   express.raw({ type: "application/json" }),

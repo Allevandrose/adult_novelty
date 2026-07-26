@@ -1,3 +1,5 @@
+// controllers/paymentController.js
+
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const intaSendService = require("../services/intasendService");
@@ -160,15 +162,14 @@ const initiatePayment = async (req, res) => {
 };
 
 /**
- * ✅ UPDATED: Handles IntaSend webhooks - Accepts without signature in dev
- * Uses raw body Buffer for HMAC verification
- * IntaSend calls this endpoint when payment status changes
+ * ✅ COMPLETE FIXED: Handles IntaSend webhooks
+ * Uses raw body Buffer for proper verification
  * @route POST /api/payments/webhook
  */
 const handleWebhook = async (req, res) => {
   const startTime = Date.now();
 
-  // ✅ IMPORTANT: req.body is a Buffer from express.raw
+  // ✅ Get raw body and headers
   const rawBody = req.body;
   const signature =
     req.headers["x-intasend-signature"] ||
@@ -177,7 +178,7 @@ const handleWebhook = async (req, res) => {
   const secret = process.env.INTASEND_WEBHOOK_SECRET;
   const isDev = process.env.NODE_ENV === "development";
 
-  // 🐛 DEBUG LOGGING - Remove in production
+  // 🐛 DEBUG logging
   console.log("\n=== WEBHOOK DEBUG ===");
   console.log(
     "Raw Body Type:",
@@ -190,30 +191,46 @@ const handleWebhook = async (req, res) => {
     signature ? signature.substring(0, 30) + "..." : "NONE",
   );
   console.log("Secret present:", !!secret);
-  console.log(
-    "Secret value:",
-    secret ? secret.substring(0, 10) + "..." : "NONE",
-  );
   console.log("NODE_ENV:", process.env.NODE_ENV);
+
   if (Buffer.isBuffer(rawBody) && rawBody.length > 0) {
     const preview = rawBody.toString("utf8").substring(0, 200);
     console.log("Body Preview:", preview + "...");
   }
   console.log("=== END DEBUG ===\n");
 
-  // ✅ DEVELOPMENT MODE: Accept webhooks even without signature
-  const acceptWithoutSignature = isDev && !signature;
-  const isDevBypass =
-    signature === "test-bypass" || signature === "test" || signature === "skip";
+  // ✅ Parse the raw body
+  let parsedBody;
+  try {
+    const bodyString = Buffer.isBuffer(rawBody)
+      ? rawBody.toString("utf8")
+      : typeof rawBody === "string"
+        ? rawBody
+        : JSON.stringify(rawBody);
+    parsedBody = JSON.parse(bodyString);
+  } catch (parseError) {
+    logger.error("❌ Failed to parse webhook body:", parseError);
+    return res.status(400).json({
+      success: false,
+      message: "Invalid JSON body",
+    });
+  }
 
-  if (acceptWithoutSignature) {
-    logger.warn("⚠️⚠️⚠️ DEV MODE: Accepting webhook WITHOUT signature! ⚠️⚠️⚠️");
-    logger.warn("⚠️ This is for development testing only!");
-    // Skip signature verification - proceed with processing
-  } else if (isDevBypass) {
-    logger.warn("⚠️⚠️⚠️ DEV MODE: Bypassing signature verification ⚠️⚠️⚠️");
-    logger.warn("⚠️ This should only be used for local testing!");
-  } else if (signature && secret) {
+  // ✅ 🔑 FIRST: Handle challenge verification (IntaSend sends this during setup)
+  if (parsedBody.challenge) {
+    logger.info("🔑 Webhook challenge verification received");
+    console.log("Challenge value:", parsedBody.challenge);
+
+    // ✅ IntaSend sends a challenge string during setup
+    // We MUST return the SAME challenge string to verify the webhook
+    return res.status(200).send(parsedBody.challenge);
+  }
+
+  // ✅ Then handle signature verification for actual payment events
+  // Skip signature verification in development mode if no signature
+  const shouldSkipVerification = isDev || !secret;
+
+  if (!shouldSkipVerification && signature && secret) {
     // ✅ Verify webhook signature with raw body
     try {
       if (!Buffer.isBuffer(rawBody) || rawBody.length === 0) {
@@ -265,39 +282,11 @@ const handleWebhook = async (req, res) => {
       success: false,
       message: "No signature provided",
     });
+  } else {
+    logger.info("⚠️ Development mode - skipping signature verification");
   }
 
-  // ✅ Parse the raw body to JSON
-  let parsedBody;
-  try {
-    const bodyString = Buffer.isBuffer(rawBody)
-      ? rawBody.toString("utf8")
-      : typeof rawBody === "string"
-        ? rawBody
-        : JSON.stringify(rawBody);
-    parsedBody = JSON.parse(bodyString);
-  } catch (parseError) {
-    logger.error("❌ Failed to parse webhook body:", parseError);
-    return res.status(400).json({
-      success: false,
-      message: "Invalid JSON body",
-    });
-  }
-
-  logger.debug("Parsed webhook body:", {
-    api_ref: parsedBody.api_ref,
-    state: parsedBody.state,
-    invoice_id: parsedBody.invoice_id,
-    event_id: parsedBody.event_id,
-  });
-
-  // ✅ Handle challenge verification (IntaSend sends this during webhook setup)
-  if (parsedBody.challenge) {
-    logger.info("🔑 Webhook challenge verification");
-    return res.status(200).json({ challenge: parsedBody.challenge });
-  }
-
-  // ✅ Respond immediately to prevent timeout, then process async
+  // ✅ Respond immediately to prevent timeout
   res.status(200).json({
     success: true,
     message: "Webhook received",
@@ -314,9 +303,7 @@ const handleWebhook = async (req, res) => {
 };
 
 /**
- * ✅ COMPLETE FIXED Internal helper: Process payment webhook data with idempotency
- * Updates order status based on payment state
- * Uses processedEvents array to prevent duplicate processing
+ * Process payment webhook data with idempotency
  */
 const processPaymentWebhook = async (data) => {
   try {
@@ -346,8 +333,6 @@ const processPaymentWebhook = async (data) => {
 
     if (!order) {
       logger.warn(`❌ Order not found for api_ref: ${api_ref}`);
-
-      // ✅ Log the full data for debugging
       logger.debug("Full webhook data:", JSON.stringify(data, null, 2));
       return;
     }
@@ -411,12 +396,11 @@ const processPaymentWebhook = async (data) => {
         intasendChargeId: charge_id || order.payment?.intasendChargeId,
       };
 
-      // ✅ Process event ID
       if (event_id && !order.payment.processedEvents.includes(event_id)) {
         order.payment.processedEvents.push(event_id);
       }
 
-      // ✅ Deduct stock from products
+      // ✅ Deduct stock
       await deductStock(order);
       await order.save();
 
