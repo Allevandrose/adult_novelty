@@ -163,7 +163,7 @@ const initiatePayment = async (req, res) => {
 
 /**
  * ✅ COMPLETE FIXED: Handles IntaSend webhooks
- * Uses raw body Buffer for proper verification
+ * Properly distinguishes between challenge verification and payment events
  * @route POST /api/payments/webhook
  */
 const handleWebhook = async (req, res) => {
@@ -216,21 +216,42 @@ const handleWebhook = async (req, res) => {
     });
   }
 
-  // ✅ 🔑 FIRST: Handle challenge verification (IntaSend sends this during setup)
-  if (parsedBody.challenge) {
-    logger.info("🔑 Webhook challenge verification received");
-    console.log("Challenge value:", parsedBody.challenge);
+  // ✅ CRITICAL: Check for challenge verification
+  // IntaSend ONLY sends the 'challenge' field during webhook SETUP
+  // For real payment events, the 'challenge' field is NOT present
+  // But IntaSend also includes it in the query string sometimes!
+  // Let's check BOTH body and query params
 
-    // ✅ IntaSend sends a challenge string during setup
-    // We MUST return the SAME challenge string to verify the webhook
-    return res.status(200).send(parsedBody.challenge);
+  // Check if this is a challenge verification request
+  // Method 1: Check body for 'challenge' field
+  // Method 2: Check query params for 'challenge' (IntaSend sometimes uses this)
+  const bodyChallenge = parsedBody.challenge;
+  const queryChallenge = req.query.challenge;
+  const isChallengeRequest = bodyChallenge || queryChallenge;
+
+  if (isChallengeRequest) {
+    const challengeValue = bodyChallenge || queryChallenge;
+    logger.info("🔑 Webhook challenge verification received");
+    console.log("Challenge value:", challengeValue);
+    console.log("Challenge source:", bodyChallenge ? "body" : "query");
+
+    // ✅ MUST return the EXACT challenge string
+    return res.status(200).send(challengeValue);
   }
 
-  // ✅ Then handle signature verification for actual payment events
-  // Skip signature verification in development mode if no signature
-  const shouldSkipVerification = isDev || !secret;
+  // ✅ This is a REAL payment event - proceed with signature verification
+  logger.info("📥 Processing payment webhook event");
 
-  if (!shouldSkipVerification && signature && secret) {
+  // Skip signature verification in development mode
+  if (!isDev && !signature) {
+    logger.error("❌ No signature header provided in production");
+    return res.status(401).json({
+      success: false,
+      message: "No signature provided",
+    });
+  }
+
+  if (signature && secret && !isDev) {
     // ✅ Verify webhook signature with raw body
     try {
       if (!Buffer.isBuffer(rawBody) || rawBody.length === 0) {
@@ -241,7 +262,6 @@ const handleWebhook = async (req, res) => {
         });
       }
 
-      // ✅ Compute HMAC-SHA256 signature
       const hmac = crypto.createHmac("sha256", secret);
       hmac.update(rawBody);
       const computedSignature = hmac.digest("hex");
@@ -250,7 +270,6 @@ const handleWebhook = async (req, res) => {
       console.log("Computed:", computedSignature);
       console.log("Received:", signature);
 
-      // ✅ Use timing-safe comparison
       const isValid = crypto.timingSafeEqual(
         Buffer.from(computedSignature, "hex"),
         Buffer.from(signature, "hex"),
@@ -275,14 +294,7 @@ const handleWebhook = async (req, res) => {
         message: "Verification error",
       });
     }
-  } else if (!isDev && !signature) {
-    // In production, reject webhooks without signature
-    logger.error("❌ No signature header provided");
-    return res.status(401).json({
-      success: false,
-      message: "No signature provided",
-    });
-  } else {
+  } else if (isDev) {
     logger.info("⚠️ Development mode - skipping signature verification");
   }
 
