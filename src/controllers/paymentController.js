@@ -1,5 +1,3 @@
-// controllers/paymentController.js
-
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const intaSendService = require("../services/intasendService");
@@ -124,7 +122,7 @@ const initiatePayment = async (req, res) => {
       intasendInvoiceId: result.invoiceId,
       paymentStatus: "pending",
       redirectUrl: result.url || null,
-      processedEvents: order.payment?.processedEvents || [], // Preserve existing processed events
+      processedEvents: order.payment?.processedEvents || [],
     };
 
     if (order.status === "pending") {
@@ -162,14 +160,13 @@ const initiatePayment = async (req, res) => {
 };
 
 /**
- * ✅ COMPLETE FIXED: Handles IntaSend webhooks
+ * Handles IntaSend webhooks
  * Properly distinguishes between challenge verification and payment events
  * @route POST /api/payments/webhook
  */
 const handleWebhook = async (req, res) => {
   const startTime = Date.now();
 
-  // ✅ Get raw body and headers
   const rawBody = req.body;
   const signature =
     req.headers["x-intasend-signature"] ||
@@ -199,7 +196,6 @@ const handleWebhook = async (req, res) => {
   }
   console.log("=== END DEBUG ===\n");
 
-  // ✅ Parse the raw body
   let parsedBody;
   try {
     const bodyString = Buffer.isBuffer(rawBody)
@@ -216,15 +212,6 @@ const handleWebhook = async (req, res) => {
     });
   }
 
-  // ✅ CRITICAL: Check for challenge verification
-  // IntaSend ONLY sends the 'challenge' field during webhook SETUP
-  // For real payment events, the 'challenge' field is NOT present
-  // But IntaSend also includes it in the query string sometimes!
-  // Let's check BOTH body and query params
-
-  // Check if this is a challenge verification request
-  // Method 1: Check body for 'challenge' field
-  // Method 2: Check query params for 'challenge' (IntaSend sometimes uses this)
   const bodyChallenge = parsedBody.challenge;
   const queryChallenge = req.query.challenge;
   const isChallengeRequest = bodyChallenge || queryChallenge;
@@ -235,14 +222,11 @@ const handleWebhook = async (req, res) => {
     console.log("Challenge value:", challengeValue);
     console.log("Challenge source:", bodyChallenge ? "body" : "query");
 
-    // ✅ MUST return the EXACT challenge string
     return res.status(200).send(challengeValue);
   }
 
-  // ✅ This is a REAL payment event - proceed with signature verification
   logger.info("📥 Processing payment webhook event");
 
-  // Skip signature verification in development mode
   if (!isDev && !signature) {
     logger.error("❌ No signature header provided in production");
     return res.status(401).json({
@@ -252,7 +236,6 @@ const handleWebhook = async (req, res) => {
   }
 
   if (signature && secret && !isDev) {
-    // ✅ Verify webhook signature with raw body
     try {
       if (!Buffer.isBuffer(rawBody) || rawBody.length === 0) {
         logger.error("❌ Invalid or empty raw body");
@@ -298,14 +281,12 @@ const handleWebhook = async (req, res) => {
     logger.info("⚠️ Development mode - skipping signature verification");
   }
 
-  // ✅ Respond immediately to prevent timeout
   res.status(200).json({
     success: true,
     message: "Webhook received",
     received: true,
   });
 
-  // ✅ Process webhook asynchronously
   try {
     await processPaymentWebhook(parsedBody);
     logger.info(`✅ Webhook processed in ${Date.now() - startTime}ms`);
@@ -340,7 +321,6 @@ const processPaymentWebhook = async (data) => {
       return;
     }
 
-    // Find order by orderNumber (api_ref is the order number)
     const order = await Order.findOne({ orderNumber: api_ref });
 
     if (!order) {
@@ -353,7 +333,6 @@ const processPaymentWebhook = async (data) => {
       `📦 Found order: ${order.orderNumber} (current status: ${order.status})`,
     );
 
-    // ✅ Initialize payment object if missing
     if (!order.payment) {
       order.payment = {};
     }
@@ -362,7 +341,6 @@ const processPaymentWebhook = async (data) => {
       order.payment.processedEvents = [];
     }
 
-    // ✅ IDEMPOTENCY: Skip if event already processed
     if (event_id && order.payment.processedEvents.includes(event_id)) {
       logger.info(
         `ℹ️ Event ${event_id} already processed for ${order.orderNumber}`,
@@ -370,7 +348,6 @@ const processPaymentWebhook = async (data) => {
       return;
     }
 
-    // ✅ Skip if order is already paid
     if (
       order.status === "paid" &&
       order.payment?.paymentStatus === "completed"
@@ -388,13 +365,11 @@ const processPaymentWebhook = async (data) => {
       `🔄 Processing state: ${normalizedState} for order ${order.orderNumber}`,
     );
 
-    // ✅ Update based on payment state
     if (
       ["COMPLETE", "COMPLETED", "SUCCESS", "SUCCESSFUL"].includes(
         normalizedState,
       )
     ) {
-      // ✅ Payment successful
       order.status = "paid";
       order.payment = {
         ...order.payment,
@@ -412,14 +387,12 @@ const processPaymentWebhook = async (data) => {
         order.payment.processedEvents.push(event_id);
       }
 
-      // ✅ Deduct stock
       await deductStock(order);
       await order.save();
 
       logger.info(`✅✅✅ Order ${order.orderNumber} PAID! Stock deducted.`);
       logger.info(`📊 Payment details: ${currency} ${value} via ${provider}`);
     } else if (["FAILED", "FAIL"].includes(normalizedState)) {
-      // ✅ Payment failed
       order.status = "payment_failed";
       order.payment = {
         ...order.payment,
@@ -439,7 +412,6 @@ const processPaymentWebhook = async (data) => {
         `❌ Payment failed for ${order.orderNumber}: ${failed_reason || "Unknown reason"}`,
       );
     } else if (["CANCELLED", "CANCEL", "CANCELED"].includes(normalizedState)) {
-      // ✅ Payment cancelled
       order.payment = {
         ...order.payment,
         paymentStatus: "cancelled",
@@ -455,7 +427,6 @@ const processPaymentWebhook = async (data) => {
       await order.save();
       logger.info(`ℹ️ Payment cancelled for ${order.orderNumber}`);
     } else {
-      // ✅ Other states (processing, pending, etc.)
       logger.info(
         `ℹ️ Payment status update: ${normalizedState} for ${order.orderNumber}`,
       );
@@ -498,7 +469,6 @@ const deductStock = async (order) => {
       continue;
     }
 
-    // ✅ Match variant by non-empty fields only
     if (item.selectedVariant?.size || item.selectedVariant?.color) {
       const variant = product.variants.find((v) => {
         const sizeMatch =
@@ -552,7 +522,6 @@ const checkPaymentStatus = async (req, res) => {
       });
     }
 
-    // ✅ Authorization check
     const orderUserId = order.user.toString();
     const requestUserId = req.user.id.toString();
 
@@ -563,7 +532,6 @@ const checkPaymentStatus = async (req, res) => {
       });
     }
 
-    // Check with IntaSend for latest status
     let intaSendStatus = null;
     if (order.payment?.intasendInvoiceId) {
       const statusCheck = await intaSendService.checkStatus(
@@ -573,7 +541,6 @@ const checkPaymentStatus = async (req, res) => {
       if (statusCheck.success) {
         intaSendStatus = statusCheck;
 
-        // Sync if IntaSend shows complete but our order doesn't
         if (statusCheck.isComplete && order.status !== "paid") {
           logger.info(
             `🔄 Syncing payment status for order ${order.orderNumber}`,
@@ -584,7 +551,6 @@ const checkPaymentStatus = async (req, res) => {
           order.payment.paymentStatus = "completed";
           order.payment.paidAt = new Date();
 
-          // Deduct stock
           await deductStock(order);
           await order.save();
         }
@@ -656,7 +622,6 @@ const verifyPaymentManually = async (req, res) => {
       });
     }
 
-    // Sync status if needed
     if (statusCheck.isComplete && order.status !== "paid") {
       logger.info(`✅ Manual sync: Marking order ${order.orderNumber} as paid`);
 
