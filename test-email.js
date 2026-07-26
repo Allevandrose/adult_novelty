@@ -1,40 +1,31 @@
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 require("dotenv").config();
+
+// Initialize Resend with your API key from .env
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 async function testEmail() {
   try {
-    console.log("📧 Testing Resend SMTP...");
+    console.log("📧 Testing Resend API...");
 
-    const transporter = nodemailer.createTransport({
-      host: "smtp.resend.com",
-      port: 465, // Use 465 for SSL/TLS
-      secure: true, // Must be true for port 465
-      auth: {
-        user: "resend", // Always use "resend" as the username
-        pass: process.env.SMTP_PASS, // Your new API key
-      },
-    });
-
-    // Verify connection
-    await transporter.verify();
-    console.log("✅ SMTP connection verified successfully!");
-
-    // Send test email
-    const info = await transporter.sendMail({
-      from: "onboarding@resend.dev", // Use this if you haven't verified a domain yet
-      to: "ibrahimmulei@gmail.com",
+    // Send test email using Resend's native HTTP fetch method
+    const data = await resend.emails.send({
+      from:
+        process.env.MAIL_FROM ||
+        "IntimaCare Support <support@intimacare.co.ke>",
+      to: ["ibrahimmulei@gmail.com"],
       subject: "✅ Test Email from IntimaCare",
       html: `
         <h1>Test Email</h1>
-        <p>If you're seeing this, Resend SMTP is working correctly!</p>
+        <p>If you're seeing this, Resend API with your custom domain is working correctly!</p>
         <p>Sent at: ${new Date().toLocaleString()}</p>
       `,
     });
 
-    console.log("✅ Email sent successfully!");
-    console.log("✅ Message ID:", info.messageId);
+    console.log("✅ Email sent successfully via Resend API!");
+    console.log("✅ Message ID:", data.id);
   } catch (error) {
-    console.error("❌ Error:", error.message);
+    console.error("❌ Error sending test email:", error.message);
   }
 }
 

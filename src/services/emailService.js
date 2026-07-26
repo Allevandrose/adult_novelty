@@ -1,67 +1,27 @@
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const logger = require("../utils/logger");
 
-let transporter = null;
-let isInitializing = false;
-
-const initializeTransporter = () => {
-  if (transporter) return transporter;
-  if (isInitializing) return transporter;
-
-  isInitializing = true;
-
-  try {
-    logger.info("📧 Initializing email transporter...");
-
-    // Resend requires these specific settings
-    transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || "smtp.resend.com",
-      port: parseInt(process.env.SMTP_PORT) || 587,
-      secure: false, // Must be false for port 587
-      auth: {
-        user: process.env.SMTP_USER || "resend",
-        pass: process.env.SMTP_PASS, // Your new API key
-      },
-      connectionTimeout: 10000,
-    });
-
-    transporter.verify((error, success) => {
-      if (error) {
-        logger.error("❌ Email transporter error:", error.message);
-        transporter = null;
-      } else {
-        logger.info("✅ Email transporter ready");
-      }
-      isInitializing = false;
-    });
-
-    return transporter;
-  } catch (error) {
-    logger.error("❌ Email initialization error:", error.message);
-    isInitializing = false;
-    return null;
-  }
-};
+// Initialize Resend client using your API key environment variable
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 exports.sendEmail = async ({ to, subject, html, text }) => {
   try {
     if (!to) return { success: false, message: "No email recipient" };
 
-    const transporter = initializeTransporter();
-    if (!transporter)
-      return { success: false, message: "Transporter not initialized" };
+    logger.info(`📧 Sending email to ${to} via Resend API...`);
 
-    const mailOptions = {
-      // Must use your verified Resend email address here
-      from: process.env.SMTP_FROM || "onboarding@resend.dev",
-      to,
+    const data = await resend.emails.send({
+      from:
+        process.env.MAIL_FROM ||
+        "IntimaCare Support <support@intimacare.co.ke>",
+      to: [to],
       subject: subject || "Notification",
       html: html || text,
       text: text,
-    };
+    });
 
-    const info = await transporter.sendMail(mailOptions);
-    return { success: true, messageId: info.messageId };
+    logger.info(`✅ Email sent successfully! Message ID: ${data.id}`);
+    return { success: true, messageId: data.id };
   } catch (error) {
     logger.error(`❌ Email send error to ${to}:`, error.message);
     return { success: false, message: error.message };
