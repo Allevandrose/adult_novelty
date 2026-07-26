@@ -1,3 +1,5 @@
+// controllers/paymentController.js
+
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const intaSendService = require("../services/intasendService");
@@ -38,7 +40,6 @@ const initiatePayment = async (req, res) => {
       });
     }
 
-    // ✅ Authorization: Only order owner can initiate payment
     const orderUserId = order.user._id.toString();
     const requestUserId = req.user.id.toString();
 
@@ -53,7 +54,6 @@ const initiatePayment = async (req, res) => {
       });
     }
 
-    // Check if order is already paid
     if (
       order.status === "paid" &&
       order.payment?.paymentStatus === "completed"
@@ -64,7 +64,6 @@ const initiatePayment = async (req, res) => {
       });
     }
 
-    // Check if order can be paid
     if (!["pending", "processing", "payment_failed"].includes(order.status)) {
       return res.status(400).json({
         success: false,
@@ -75,7 +74,6 @@ const initiatePayment = async (req, res) => {
     let result;
 
     if (paymentMethod === "mpesa") {
-      // ✅ Direct M-Pesa STK Push (M-Pesa only, no checkout page)
       const stkData = {
         orderId: order.orderNumber,
         amount: order.totalAmount,
@@ -90,7 +88,6 @@ const initiatePayment = async (req, res) => {
       logger.info("📤 Sending M-Pesa STK Push...");
       result = await intaSendService.mpesaStkPush(stkData);
     } else {
-      // ✅ Universal Checkout Link (Card, M-Pesa, Google Pay, etc.)
       const checkoutData = {
         orderId: order.orderNumber,
         amount: order.totalAmount,
@@ -114,7 +111,6 @@ const initiatePayment = async (req, res) => {
       });
     }
 
-    // ✅ Save payment info to order
     order.payment = {
       ...order.payment,
       method: paymentMethod === "mpesa" ? "mpesa" : "checkout",
@@ -160,8 +156,8 @@ const initiatePayment = async (req, res) => {
 };
 
 /**
- * Handles IntaSend webhooks
- * Properly distinguishes between challenge verification and payment events
+ * ✅ COMPLETE FIXED: Handles IntaSend webhooks
+ * Checks for 'state' field FIRST to identify payment events
  * @route POST /api/payments/webhook
  */
 const handleWebhook = async (req, res) => {
@@ -175,7 +171,6 @@ const handleWebhook = async (req, res) => {
   const secret = process.env.INTASEND_WEBHOOK_SECRET;
   const isDev = process.env.NODE_ENV === "development";
 
-  // 🐛 DEBUG logging
   console.log("\n=== WEBHOOK DEBUG ===");
   console.log(
     "Raw Body Type:",
@@ -183,11 +178,6 @@ const handleWebhook = async (req, res) => {
   );
   console.log("Raw Body Length:", rawBody ? rawBody.length : 0);
   console.log("Signature present:", !!signature);
-  console.log(
-    "Signature value:",
-    signature ? signature.substring(0, 30) + "..." : "NONE",
-  );
-  console.log("Secret present:", !!secret);
   console.log("NODE_ENV:", process.env.NODE_ENV);
 
   if (Buffer.isBuffer(rawBody) && rawBody.length > 0) {
@@ -212,87 +202,91 @@ const handleWebhook = async (req, res) => {
     });
   }
 
-  const bodyChallenge = parsedBody.challenge;
-  const queryChallenge = req.query.challenge;
-  const isChallengeRequest = bodyChallenge || queryChallenge;
+  // ✅✅✅ CRITICAL: Check for 'state' field FIRST!
+  // Payment events have 'state', challenge requests do NOT
+  if (parsedBody.state) {
+    logger.info("📥 Processing payment webhook event");
+    console.log("Payment State:", parsedBody.state);
+    console.log("Invoice ID:", parsedBody.invoice_id);
+    console.log("API Ref:", parsedBody.api_ref);
 
-  if (isChallengeRequest) {
-    const challengeValue = bodyChallenge || queryChallenge;
-    logger.info("🔑 Webhook challenge verification received");
-    console.log("Challenge value:", challengeValue);
-    console.log("Challenge source:", bodyChallenge ? "body" : "query");
-
-    return res.status(200).send(challengeValue);
-  }
-
-  logger.info("📥 Processing payment webhook event");
-
-  if (!isDev && !signature) {
-    logger.error("❌ No signature header provided in production");
-    return res.status(401).json({
-      success: false,
-      message: "No signature provided",
-    });
-  }
-
-  if (signature && secret && !isDev) {
-    try {
-      if (!Buffer.isBuffer(rawBody) || rawBody.length === 0) {
-        logger.error("❌ Invalid or empty raw body");
-        return res.status(400).json({
-          success: false,
-          message: "Invalid request body",
-        });
-      }
-
-      const hmac = crypto.createHmac("sha256", secret);
-      hmac.update(rawBody);
-      const computedSignature = hmac.digest("hex");
-
-      console.log("=== SIGNATURE VERIFICATION ===");
-      console.log("Computed:", computedSignature);
-      console.log("Received:", signature);
-
-      const isValid = crypto.timingSafeEqual(
-        Buffer.from(computedSignature, "hex"),
-        Buffer.from(signature, "hex"),
-      );
-
-      console.log("Match:", isValid ? "✅ YES" : "❌ NO");
-      console.log("=== END VERIFICATION ===\n");
-
-      if (!isValid) {
-        logger.warn("❌ Invalid webhook signature - possible fraud attempt");
-        return res.status(403).json({
-          success: false,
-          message: "Invalid signature",
-        });
-      }
-
-      logger.info("✅ Webhook signature verified successfully");
-    } catch (error) {
-      logger.error("❌ Signature verification error:", error);
-      return res.status(500).json({
+    // Verify signature in production
+    if (!isDev && !signature) {
+      logger.error("❌ No signature header provided in production");
+      return res.status(401).json({
         success: false,
-        message: "Verification error",
+        message: "No signature provided",
       });
     }
-  } else if (isDev) {
-    logger.info("⚠️ Development mode - skipping signature verification");
+
+    if (signature && secret && !isDev) {
+      try {
+        if (!Buffer.isBuffer(rawBody) || rawBody.length === 0) {
+          logger.error("❌ Invalid or empty raw body");
+          return res.status(400).json({
+            success: false,
+            message: "Invalid request body",
+          });
+        }
+
+        const hmac = crypto.createHmac("sha256", secret);
+        hmac.update(rawBody);
+        const computedSignature = hmac.digest("hex");
+
+        const isValid = crypto.timingSafeEqual(
+          Buffer.from(computedSignature, "hex"),
+          Buffer.from(signature, "hex"),
+        );
+
+        if (!isValid) {
+          logger.warn("❌ Invalid webhook signature");
+          return res.status(403).json({
+            success: false,
+            message: "Invalid signature",
+          });
+        }
+
+        logger.info("✅ Webhook signature verified successfully");
+      } catch (error) {
+        logger.error("❌ Signature verification error:", error);
+        return res.status(500).json({
+          success: false,
+          message: "Verification error",
+        });
+      }
+    } else if (isDev) {
+      logger.info("⚠️ Development mode - skipping signature verification");
+    }
+
+    // Respond immediately
+    res.status(200).json({
+      success: true,
+      message: "Webhook received",
+      received: true,
+    });
+
+    // Process webhook asynchronously
+    try {
+      await processPaymentWebhook(parsedBody);
+      logger.info(`✅ Webhook processed in ${Date.now() - startTime}ms`);
+    } catch (error) {
+      logger.error("❌ Webhook processing error:", error);
+    }
+    return;
   }
 
-  res.status(200).json({
-    success: true,
-    message: "Webhook received",
-    received: true,
+  // ✅ Handle challenge verification (ONLY when there's NO 'state')
+  if (parsedBody.challenge) {
+    logger.info("🔑 Webhook challenge verification received");
+    console.log("Challenge value:", parsedBody.challenge);
+    return res.status(200).send(parsedBody.challenge);
+  }
+
+  logger.warn("⚠️ Invalid webhook request - no state or challenge");
+  return res.status(400).json({
+    success: false,
+    message: "Invalid webhook request",
   });
-
-  try {
-    await processPaymentWebhook(parsedBody);
-    logger.info(`✅ Webhook processed in ${Date.now() - startTime}ms`);
-  } catch (error) {
-    logger.error("❌ Webhook processing error:", error);
-  }
 };
 
 /**
@@ -457,7 +451,6 @@ const processPaymentWebhook = async (data) => {
 
 /**
  * Helper: Deduct stock from products after successful payment
- * Uses non-empty field matching for variants
  */
 const deductStock = async (order) => {
   logger.info(`📦 Deducting stock for order ${order.orderNumber}`);
@@ -506,7 +499,6 @@ const deductStock = async (order) => {
 
 /**
  * Check payment status (User facing)
- * User can poll this to check if their payment was processed
  * @route GET /api/payments/status/:orderId
  */
 const checkPaymentStatus = async (req, res) => {
@@ -585,7 +577,6 @@ const checkPaymentStatus = async (req, res) => {
 
 /**
  * Manual payment verification (Admin only)
- * Forces a sync with IntaSend for a specific order
  * @route GET /api/payments/verify/:orderId
  */
 const verifyPaymentManually = async (req, res) => {
