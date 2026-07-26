@@ -95,16 +95,62 @@ const getDashboardStats = async (req, res) => {
       .limit(5)
       .select("email phone createdAt");
 
-    // ✅ Get low stock products
-    const lowStockProducts = await Product.find({
+    // ✅ FIXED: Get low stock products - Calculate total stock from variants
+    // First, get all products with variants that have low stock
+    const allProducts = await Product.find({
       isActive: true,
-      $or: [
-        { stock: { $lt: 10 } },
-        { variants: { $elemMatch: { stock: { $lt: 10 } } } },
-      ],
-    })
-      .select("name stock variants images")
-      .limit(5);
+    }).lean();
+
+    // Process each product to calculate total stock from variants
+    const lowStockProducts = allProducts
+      .map((product) => {
+        // Calculate total stock from variants if they exist
+        let totalStock = 0;
+        let lowStockVariants = [];
+
+        if (product.variants && product.variants.length > 0) {
+          // Sum up all variant stocks
+          totalStock = product.variants.reduce(
+            (sum, v) => sum + (v.stock || 0),
+            0,
+          );
+
+          // Find variants with low stock (less than 10)
+          lowStockVariants = product.variants.filter(
+            (v) => (v.stock || 0) < 10,
+          );
+
+          // Check if any variant has low stock
+          const hasLowStockVariant = lowStockVariants.length > 0;
+
+          // Include product if total stock is low OR any variant has low stock
+          if (totalStock < 10 || hasLowStockVariant) {
+            return {
+              ...product,
+              totalStock: totalStock,
+              hasLowStockVariant: hasLowStockVariant,
+              lowStockVariants: lowStockVariants,
+              // For display purposes, show the total stock
+              stock: totalStock,
+            };
+          }
+        } else {
+          // For products without variants, use the stock field
+          totalStock = product.stock || 0;
+          if (totalStock < 10) {
+            return {
+              ...product,
+              totalStock: totalStock,
+              hasLowStockVariant: false,
+              lowStockVariants: [],
+              stock: totalStock,
+            };
+          }
+        }
+        return null;
+      })
+      .filter((product) => product !== null)
+      .slice(0, 5); // Limit to 5 products
 
     // ✅ Prepare response
     const stats = {
