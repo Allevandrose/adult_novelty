@@ -202,11 +202,14 @@ const handleWebhook = async (req, res) => {
     });
   }
 
+  // 🔍 LOG FULL DATA
+  console.log("🔍 FULL WEBHOOK DATA:", JSON.stringify(parsedBody, null, 2));
+
   // ✅✅✅ CRITICAL: Check for 'state' field FIRST!
-  // Payment events have 'state', challenge requests do NOT
   if (parsedBody.state) {
-    logger.info("📥 Processing payment webhook event");
-    console.log("Payment State:", parsedBody.state);
+    const state = parsedBody.state.toUpperCase();
+    logger.info(`📥 Processing payment webhook event - STATE: ${state}`);
+    console.log("Payment State:", state);
     console.log("Invoice ID:", parsedBody.invoice_id);
     console.log("API Ref:", parsedBody.api_ref);
 
@@ -275,7 +278,6 @@ const handleWebhook = async (req, res) => {
     return;
   }
 
-  // ✅ Handle challenge verification (ONLY when there's NO 'state')
   if (parsedBody.challenge) {
     logger.info("🔑 Webhook challenge verification received");
     console.log("Challenge value:", parsedBody.challenge);
@@ -290,7 +292,8 @@ const handleWebhook = async (req, res) => {
 };
 
 /**
- * Process payment webhook data with idempotency
+ * ✅ COMPLETE FIXED: Process payment webhook data with idempotency
+ * Properly detects COMPLETE state and updates order to paid
  */
 const processPaymentWebhook = async (data) => {
   try {
@@ -306,6 +309,11 @@ const processPaymentWebhook = async (data) => {
       tracking_id,
       charge_id,
     } = data;
+
+    // 🔍 LOG EVERYTHING
+    console.log("🔍 PROCESSING WEBHOOK DATA:", JSON.stringify(data, null, 2));
+    console.log("📊 State received:", state);
+    console.log("📊 State type:", typeof state);
 
     logger.info(`📥 Processing webhook for api_ref: ${api_ref}`);
 
@@ -335,6 +343,7 @@ const processPaymentWebhook = async (data) => {
       order.payment.processedEvents = [];
     }
 
+    // ✅ IDEMPOTENCY: Skip if event already processed
     if (event_id && order.payment.processedEvents.includes(event_id)) {
       logger.info(
         `ℹ️ Event ${event_id} already processed for ${order.orderNumber}`,
@@ -342,6 +351,7 @@ const processPaymentWebhook = async (data) => {
       return;
     }
 
+    // ✅ Skip if order is already paid
     if (
       order.status === "paid" &&
       order.payment?.paymentStatus === "completed"
@@ -354,16 +364,30 @@ const processPaymentWebhook = async (data) => {
       return;
     }
 
-    const normalizedState = (state || "").toUpperCase();
+    // ✅ BETTER STATE DETECTION
+    const normalizedState = (state || "").toUpperCase().trim();
     logger.info(
-      `🔄 Processing state: ${normalizedState} for order ${order.orderNumber}`,
+      `🔄 Processing state: '${normalizedState}' for order ${order.orderNumber}`,
     );
 
-    if (
-      ["COMPLETE", "COMPLETED", "SUCCESS", "SUCCESSFUL"].includes(
-        normalizedState,
-      )
-    ) {
+    // ✅ Check for COMPLETE (including variations)
+    const isComplete = [
+      "COMPLETE",
+      "COMPLETED",
+      "SUCCESS",
+      "SUCCESSFUL",
+    ].includes(normalizedState);
+
+    const isFailed = ["FAILED", "FAIL", "ERROR"].includes(normalizedState);
+
+    const isCancelled = ["CANCELLED", "CANCEL", "CANCELED"].includes(
+      normalizedState,
+    );
+
+    if (isComplete) {
+      // ✅ Payment successful
+      console.log(`✅✅✅ ORDER ${order.orderNumber} IS COMPLETE!`);
+
       order.status = "paid";
       order.payment = {
         ...order.payment,
@@ -381,12 +405,20 @@ const processPaymentWebhook = async (data) => {
         order.payment.processedEvents.push(event_id);
       }
 
+      // ✅ Deduct stock
       await deductStock(order);
       await order.save();
 
       logger.info(`✅✅✅ Order ${order.orderNumber} PAID! Stock deducted.`);
       logger.info(`📊 Payment details: ${currency} ${value} via ${provider}`);
-    } else if (["FAILED", "FAIL"].includes(normalizedState)) {
+
+      return;
+    }
+
+    if (isFailed) {
+      // ✅ Payment failed
+      console.log(`❌❌❌ ORDER ${order.orderNumber} FAILED!`);
+
       order.status = "payment_failed";
       order.payment = {
         ...order.payment,
@@ -405,7 +437,14 @@ const processPaymentWebhook = async (data) => {
       logger.warn(
         `❌ Payment failed for ${order.orderNumber}: ${failed_reason || "Unknown reason"}`,
       );
-    } else if (["CANCELLED", "CANCEL", "CANCELED"].includes(normalizedState)) {
+
+      return;
+    }
+
+    if (isCancelled) {
+      // ✅ Payment cancelled
+      console.log(`⏸️ ORDER ${order.orderNumber} CANCELLED!`);
+
       order.payment = {
         ...order.payment,
         paymentStatus: "cancelled",
@@ -420,25 +459,26 @@ const processPaymentWebhook = async (data) => {
 
       await order.save();
       logger.info(`ℹ️ Payment cancelled for ${order.orderNumber}`);
-    } else {
-      logger.info(
-        `ℹ️ Payment status update: ${normalizedState} for ${order.orderNumber}`,
-      );
 
-      order.payment = {
-        ...order.payment,
-        paymentStatus: normalizedState.toLowerCase(),
-        intasendInvoiceId: invoice_id || order.payment?.intasendInvoiceId,
-        intasendTrackingId: tracking_id || order.payment?.intasendTrackingId,
-        intasendChargeId: charge_id || order.payment?.intasendChargeId,
-      };
-
-      if (event_id && !order.payment.processedEvents.includes(event_id)) {
-        order.payment.processedEvents.push(event_id);
-      }
-
-      await order.save();
+      return;
     }
+
+    // ✅ Other states (processing, pending, etc.)
+    console.log(`⏳ ORDER ${order.orderNumber} state: ${normalizedState}`);
+
+    order.payment = {
+      ...order.payment,
+      paymentStatus: normalizedState.toLowerCase(),
+      intasendInvoiceId: invoice_id || order.payment?.intasendInvoiceId,
+      intasendTrackingId: tracking_id || order.payment?.intasendTrackingId,
+      intasendChargeId: charge_id || order.payment?.intasendChargeId,
+    };
+
+    if (event_id && !order.payment.processedEvents.includes(event_id)) {
+      order.payment.processedEvents.push(event_id);
+    }
+
+    await order.save();
 
     logger.info(
       `📊 Order ${order.orderNumber} now has ${order.payment.processedEvents.length} processed events`,
