@@ -64,11 +64,6 @@ class IntaSendService {
 
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
 
-      // ✅ FIXED: Use the correct success URL with proper parameters
-      // IntaSend will redirect to this URL after payment with status parameters
-      const successUrl = `${frontendUrl}/payment-success?order=${orderData.orderId}&status=success`;
-      const cancelUrl = `${frontendUrl}/payment-success?order=${orderData.orderId}&status=failed`;
-
       const chargeData = {
         first_name: orderData.firstName || "Customer",
         last_name: orderData.lastName || "User",
@@ -77,18 +72,15 @@ class IntaSendService {
         amount: orderData.amount,
         currency: "KES",
         api_ref: orderData.orderId,
-        // ✅ FIXED: Use separate redirect_url for success and cancel
-        redirect_url: successUrl,
-        // IntaSend may use these additional fields
-        success_redirect_url: successUrl,
-        cancel_redirect_url: cancelUrl,
+        redirect_url:
+          orderData.redirectUrl ||
+          `${frontendUrl}/payment-success?order=${orderData.orderId}`,
       };
 
       logger.info("📤 Creating IntaSend Checkout:", {
         api_ref: chargeData.api_ref,
         amount: chargeData.amount,
         email: chargeData.email,
-        redirect_url: chargeData.redirect_url,
       });
 
       const response = await this.collection.charge(chargeData);
@@ -135,8 +127,6 @@ class IntaSendService {
         throw new Error("IntaSend not initialized");
       }
 
-      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
-
       const stkData = {
         first_name: paymentData.firstName || "Customer",
         last_name: paymentData.lastName || "User",
@@ -144,9 +134,7 @@ class IntaSendService {
         phone_number: paymentData.phoneNumber,
         amount: paymentData.amount,
         api_ref: paymentData.orderId,
-        // ✅ FIXED: Use proper redirect URL for STK Push
-        host: frontendUrl,
-        redirect_url: `${frontendUrl}/payment-success?order=${paymentData.orderId}&status=success`,
+        host: process.env.FRONTEND_URL || "http://localhost:5173",
       };
 
       logger.info("📤 Sending M-Pesa STK Push");
