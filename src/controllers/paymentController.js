@@ -3,9 +3,10 @@
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const intaSendService = require("../services/intasendService");
-const { sendOrderConfirmationEmail } = require("../services/emailService");
 const logger = require("../utils/logger");
 const crypto = require("crypto");
+// ✅ ADDED: Import email service
+const emailService = require("../services/emailService");
 
 /**
  * Initiate payment for an order
@@ -72,10 +73,6 @@ const initiatePayment = async (req, res) => {
       });
     }
 
-    // ✅ FIXED: Build the redirect URL for success page
-    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
-    const successRedirectUrl = `${frontendUrl}/payment-success?order=${order.orderNumber}&status=success`;
-
     let result;
 
     if (paymentMethod === "mpesa") {
@@ -88,7 +85,6 @@ const initiatePayment = async (req, res) => {
         firstName:
           order.user.name || order.user.email?.split("@")[0] || "Customer",
         lastName: "",
-        redirectUrl: successRedirectUrl, // ✅ ADDED: Pass redirect URL
       };
 
       logger.info("📤 Sending M-Pesa STK Push...");
@@ -102,10 +98,10 @@ const initiatePayment = async (req, res) => {
         firstName:
           order.user.name || order.user.email?.split("@")[0] || "Customer",
         lastName: "",
-        redirectUrl: successRedirectUrl, // ✅ FIXED: Use the constructed URL
+        redirectUrl: `${process.env.FRONTEND_URL || "http://localhost:5173"}/payment-success?order=${order.orderNumber}`,
       };
 
-      logger.info("📤 Creating IntaSend Checkout Link...");
+      logger.info("📤 Creating IntaSend Checkout...");
       result = await intaSendService.createCheckout(checkoutData);
     }
 
@@ -137,7 +133,6 @@ const initiatePayment = async (req, res) => {
       orderNumber: order.orderNumber,
       invoiceId: result.invoiceId,
       method: paymentMethod,
-      redirectUrl: successRedirectUrl,
     });
 
     res.json({
@@ -302,7 +297,7 @@ const handleWebhook = async (req, res) => {
  * ✅ COMPLETE FIXED: Process payment webhook data with idempotency
  * Properly detects COMPLETE state and updates order to paid
  * ✅ FIXED: Normalizes "M-PESA" to "MPESA" for enum compatibility
- * ✅ ADDED: Sends email confirmation on successful payment
+ * ✅ ADDED: Send email confirmation on successful payment
  */
 const processPaymentWebhook = async (data) => {
   try {
@@ -332,10 +327,9 @@ const processPaymentWebhook = async (data) => {
       return;
     }
 
-    // ✅ Populate user data for email
     const order = await Order.findOne({ orderNumber: api_ref }).populate(
       "user",
-      "email name phone",
+      "email phone name",
     );
 
     if (!order) {
@@ -401,9 +395,14 @@ const processPaymentWebhook = async (data) => {
       // ✅ Payment successful
       console.log(`✅✅✅ ORDER ${order.orderNumber} IS COMPLETE!`);
 
-      // ✅ Normalize provider value for enum compatibility
+      // ✅✅✅ FIXED: Normalize provider value for enum compatibility
+      // IntaSend sends "M-PESA" but our enum expects "MPESA"
       let normalizedProvider = provider || "INTASEND";
-      if (normalizedProvider === "M-PESA" || normalizedProvider === "M-Pesa") {
+      if (normalizedProvider === "M-PESA") {
+        normalizedProvider = "MPESA";
+      }
+      // Also handle other variations
+      if (normalizedProvider === "M-Pesa") {
         normalizedProvider = "MPESA";
       }
 
@@ -428,20 +427,29 @@ const processPaymentWebhook = async (data) => {
       await deductStock(order);
       await order.save();
 
-      // ✅✅✅ SEND EMAIL NOTIFICATION
-      try {
-        await sendOrderConfirmationEmail(order);
-        logger.info(
-          `📧 Order confirmation email sent for ${order.orderNumber}`,
-        );
-      } catch (emailError) {
-        logger.error("❌ Failed to send order confirmation email:", emailError);
-        // Don't fail the webhook if email fails
-      }
-
       logger.info(`✅✅✅ Order ${order.orderNumber} PAID! Stock deducted.`);
       logger.info(`📊 Payment details: ${currency} ${value} via ${provider}`);
       logger.info(`📊 Normalized provider: ${normalizedProvider}`);
+
+      // ✅✅✅ NEW: Send payment confirmation email
+      try {
+        const emailResult =
+          await emailService.sendPaymentConfirmationEmail(order);
+        if (emailResult.success) {
+          logger.info(
+            `📧 Payment confirmation email sent for order ${order.orderNumber}`,
+          );
+        } else {
+          logger.warn(
+            `⚠️ Failed to send payment confirmation email: ${emailResult.message}`,
+          );
+        }
+      } catch (emailError) {
+        // Don't fail the webhook if email fails
+        logger.error(
+          `❌ Error sending payment confirmation email: ${emailError.message}`,
+        );
+      }
 
       return;
     }
@@ -468,6 +476,23 @@ const processPaymentWebhook = async (data) => {
       logger.warn(
         `❌ Payment failed for ${order.orderNumber}: ${failed_reason || "Unknown reason"}`,
       );
+
+      // ✅✅✅ NEW: Send payment failed email
+      try {
+        const emailResult = await emailService.sendPaymentFailedEmail(
+          order,
+          failed_reason || "Payment processing failed",
+        );
+        if (emailResult.success) {
+          logger.info(
+            `📧 Payment failed email sent for order ${order.orderNumber}`,
+          );
+        }
+      } catch (emailError) {
+        logger.error(
+          `❌ Error sending payment failed email: ${emailError.message}`,
+        );
+      }
 
       return;
     }

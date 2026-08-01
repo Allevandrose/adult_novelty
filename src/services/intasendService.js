@@ -55,7 +55,6 @@ class IntaSendService {
 
   /**
    * Create payment checkout session
-   * ✅ FIXED: Ensures redirect_url is properly set
    */
   async createCheckout(orderData) {
     try {
@@ -64,9 +63,11 @@ class IntaSendService {
       }
 
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
-      const redirectUrl =
-        orderData.redirectUrl ||
-        `${frontendUrl}/payment-success?order=${orderData.orderId}&status=success`;
+
+      // ✅ FIXED: Use the correct success URL with proper parameters
+      // IntaSend will redirect to this URL after payment with status parameters
+      const successUrl = `${frontendUrl}/payment-success?order=${orderData.orderId}&status=success`;
+      const cancelUrl = `${frontendUrl}/payment-success?order=${orderData.orderId}&status=failed`;
 
       const chargeData = {
         first_name: orderData.firstName || "Customer",
@@ -76,7 +77,11 @@ class IntaSendService {
         amount: orderData.amount,
         currency: "KES",
         api_ref: orderData.orderId,
-        redirect_url: redirectUrl, // ✅ FIXED: Ensure redirect_url is passed
+        // ✅ FIXED: Use separate redirect_url for success and cancel
+        redirect_url: successUrl,
+        // IntaSend may use these additional fields
+        success_redirect_url: successUrl,
+        cancel_redirect_url: cancelUrl,
       };
 
       logger.info("📤 Creating IntaSend Checkout:", {
@@ -123,7 +128,6 @@ class IntaSendService {
 
   /**
    * Direct M-Pesa STK Push
-   * ✅ FIXED: Includes redirect_url
    */
   async mpesaStkPush(paymentData) {
     try {
@@ -132,9 +136,6 @@ class IntaSendService {
       }
 
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
-      const redirectUrl =
-        paymentData.redirectUrl ||
-        `${frontendUrl}/payment-success?order=${paymentData.orderId}&status=success`;
 
       const stkData = {
         first_name: paymentData.firstName || "Customer",
@@ -143,15 +144,12 @@ class IntaSendService {
         phone_number: paymentData.phoneNumber,
         amount: paymentData.amount,
         api_ref: paymentData.orderId,
-        host: process.env.FRONTEND_URL || "http://localhost:5173",
-        redirect_url: redirectUrl, // ✅ FIXED: Added redirect URL
+        // ✅ FIXED: Use proper redirect URL for STK Push
+        host: frontendUrl,
+        redirect_url: `${frontendUrl}/payment-success?order=${paymentData.orderId}&status=success`,
       };
 
-      logger.info("📤 Sending M-Pesa STK Push with redirect:", {
-        api_ref: stkData.api_ref,
-        redirect_url: stkData.redirect_url,
-      });
-
+      logger.info("📤 Sending M-Pesa STK Push");
       const response = await this.collection.mpesaStkPush(stkData);
 
       return {
