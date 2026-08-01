@@ -1,3 +1,5 @@
+// services/intasendService.js
+
 const IntaSend = require("intasend-node");
 const crypto = require("crypto");
 const logger = require("../utils/logger");
@@ -32,6 +34,23 @@ class IntaSendService {
     } catch (error) {
       logger.error("❌ IntaSend initialization error:", error.message);
     }
+  }
+
+  /**
+   * ✅ Helper: Normalize provider value for enum compatibility
+   * Converts "M-PESA" to "MPESA" for database enum
+   */
+  normalizeProvider(provider) {
+    if (!provider) return "INTASEND";
+    const normalized = provider.toUpperCase().trim();
+    if (
+      normalized === "M-PESA" ||
+      normalized === "M-PESA" ||
+      normalized === "MPESA"
+    ) {
+      return "MPESA";
+    }
+    return normalized;
   }
 
   /**
@@ -177,17 +196,9 @@ class IntaSendService {
 
   /**
    * ✅ PROPER HMAC-SHA256 Webhook Verification
-   *
-   * IntaSend signs the raw request body with your webhook secret
-   * using HMAC-SHA256 and sends the signature in a header.
-   *
-   * @param {Buffer|string} rawBody - The raw request body (must be a Buffer or raw string, NOT parsed JSON)
-   * @param {string} signature - The signature from the X-IntaSend-Signature header
-   * @returns {boolean} - True if signature is valid
    */
   verifyWebhookSignature(rawBody, signature) {
     try {
-      // In development without secret, allow all
       if (!this.webhookSecret) {
         logger.warn("⚠️ No webhook secret configured, skipping verification");
         return true;
@@ -203,14 +214,12 @@ class IntaSendService {
         return false;
       }
 
-      // ✅ Convert body to string if it's a Buffer
       const bodyString = Buffer.isBuffer(rawBody)
         ? rawBody.toString("utf8")
         : typeof rawBody === "string"
           ? rawBody
           : JSON.stringify(rawBody);
 
-      // ✅ Create HMAC-SHA256 hash of the raw body using webhook secret
       const hmac = crypto.createHmac("sha256", this.webhookSecret);
       const computedSignature = hmac.update(bodyString).digest("hex");
 
@@ -220,7 +229,6 @@ class IntaSendService {
         bodyLength: bodyString.length,
       });
 
-      // ✅ Use timing-safe comparison to prevent timing attacks
       try {
         const signatureBuffer = Buffer.from(signature, "utf8");
         const computedBuffer = Buffer.from(computedSignature, "utf8");

@@ -76,7 +76,8 @@ const orderSchema = new mongoose.Schema(
       },
       provider: {
         type: String,
-        enum: ["INTASEND", "MPESA", "AIRTEL", "CARD", "BANK"],
+        // ✅ FIXED: Added "M-PESA" to enum to match IntaSend webhook
+        enum: ["INTASEND", "MPESA", "M-PESA", "AIRTEL", "CARD", "BANK"],
         default: "INTASEND",
       },
       intasendInvoiceId: {
@@ -91,7 +92,7 @@ const orderSchema = new mongoose.Schema(
         enum: ["pending", "processing", "completed", "failed", "cancelled"],
         default: "pending",
       },
-      processedEvents: [String], // ✅ Track event IDs to prevent duplicate webhook processing
+      processedEvents: [String],
       paidAt: Date,
       amountPaid: Number,
       currency: {
@@ -119,7 +120,7 @@ const orderSchema = new mongoose.Schema(
   },
 );
 
-// ✅ Compound indexes for common queries
+// Compound indexes for common queries
 orderSchema.index({ user: 1, createdAt: -1 });
 orderSchema.index({ status: 1, createdAt: -1 });
 orderSchema.index({ "payment.intasendInvoiceId": 1 });
@@ -136,22 +137,22 @@ orderSchema.pre("save", function (next) {
   next();
 });
 
-// ✅ Virtual for order age
+// Virtual for order age
 orderSchema.virtual("age").get(function () {
   return Date.now() - this.createdAt;
 });
 
-// ✅ Method to check if order can be cancelled
+// Method to check if order can be cancelled
 orderSchema.methods.canCancel = function () {
   return ["pending", "processing"].includes(this.status);
 };
 
-// ✅ Method to check if payment is complete
+// Method to check if payment is complete
 orderSchema.methods.isPaid = function () {
   return this.status === "paid" && this.payment?.paymentStatus === "completed";
 };
 
-// ✅ Method to check if webhook event was already processed
+// Method to check if webhook event was already processed
 orderSchema.methods.isEventProcessed = function (eventId) {
   if (!this.payment.processedEvents) {
     this.payment.processedEvents = [];
@@ -159,7 +160,7 @@ orderSchema.methods.isEventProcessed = function (eventId) {
   return this.payment.processedEvents.includes(eventId);
 };
 
-// ✅ Method to mark webhook event as processed
+// Method to mark webhook event as processed
 orderSchema.methods.markEventProcessed = function (eventId) {
   if (!this.payment.processedEvents) {
     this.payment.processedEvents = [];
@@ -169,7 +170,7 @@ orderSchema.methods.markEventProcessed = function (eventId) {
   }
 };
 
-// ✅ Method to update payment status with proper validation
+// Method to update payment status with proper validation
 orderSchema.methods.updatePaymentStatus = function (status, metadata = {}) {
   const validStatuses = [
     "pending",
@@ -211,7 +212,7 @@ orderSchema.methods.updatePaymentStatus = function (status, metadata = {}) {
   });
 };
 
-// ✅ Method to format order for API response
+// Method to format order for API response
 orderSchema.methods.toApiResponse = function () {
   const order = this.toJSON();
   return {
@@ -232,12 +233,12 @@ orderSchema.methods.toApiResponse = function () {
   };
 };
 
-// ✅ Static method to find orders by payment ID
+// Static method to find orders by payment ID
 orderSchema.statics.findByIntaSendInvoiceId = function (invoiceId) {
   return this.findOne({ "payment.intasendInvoiceId": invoiceId });
 };
 
-// ✅ Static method to get orders needing payment verification
+// Static method to get orders needing payment verification
 orderSchema.statics.getPendingPaymentOrders = function () {
   return this.find({
     "payment.paymentStatus": { $in: ["pending", "processing"] },

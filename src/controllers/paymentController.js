@@ -294,6 +294,7 @@ const handleWebhook = async (req, res) => {
 /**
  * ✅ COMPLETE FIXED: Process payment webhook data with idempotency
  * Properly detects COMPLETE state and updates order to paid
+ * ✅ FIXED: Normalizes "M-PESA" to "MPESA" for enum compatibility
  */
 const processPaymentWebhook = async (data) => {
   try {
@@ -388,10 +389,21 @@ const processPaymentWebhook = async (data) => {
       // ✅ Payment successful
       console.log(`✅✅✅ ORDER ${order.orderNumber} IS COMPLETE!`);
 
+      // ✅✅✅ FIXED: Normalize provider value for enum compatibility
+      // IntaSend sends "M-PESA" but our enum expects "MPESA"
+      let normalizedProvider = provider || "INTASEND";
+      if (normalizedProvider === "M-PESA") {
+        normalizedProvider = "MPESA";
+      }
+      // Also handle other variations
+      if (normalizedProvider === "M-Pesa") {
+        normalizedProvider = "MPESA";
+      }
+
       order.status = "paid";
       order.payment = {
         ...order.payment,
-        provider: provider || "INTASEND",
+        provider: normalizedProvider,
         paymentStatus: "completed",
         paidAt: new Date(),
         amountPaid: parseFloat(value) || order.totalAmount,
@@ -411,6 +423,7 @@ const processPaymentWebhook = async (data) => {
 
       logger.info(`✅✅✅ Order ${order.orderNumber} PAID! Stock deducted.`);
       logger.info(`📊 Payment details: ${currency} ${value} via ${provider}`);
+      logger.info(`📊 Normalized provider: ${normalizedProvider}`);
 
       return;
     }
