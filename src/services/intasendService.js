@@ -55,6 +55,7 @@ class IntaSendService {
 
   /**
    * Create payment checkout session
+   * ✅ FIXED: Ensures redirect_url is properly set
    */
   async createCheckout(orderData) {
     try {
@@ -63,6 +64,9 @@ class IntaSendService {
       }
 
       const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+      const redirectUrl =
+        orderData.redirectUrl ||
+        `${frontendUrl}/payment-success?order=${orderData.orderId}&status=success`;
 
       const chargeData = {
         first_name: orderData.firstName || "Customer",
@@ -72,15 +76,14 @@ class IntaSendService {
         amount: orderData.amount,
         currency: "KES",
         api_ref: orderData.orderId,
-        redirect_url:
-          orderData.redirectUrl ||
-          `${frontendUrl}/payment-success?order=${orderData.orderId}`,
+        redirect_url: redirectUrl, // ✅ FIXED: Ensure redirect_url is passed
       };
 
       logger.info("📤 Creating IntaSend Checkout:", {
         api_ref: chargeData.api_ref,
         amount: chargeData.amount,
         email: chargeData.email,
+        redirect_url: chargeData.redirect_url,
       });
 
       const response = await this.collection.charge(chargeData);
@@ -120,12 +123,18 @@ class IntaSendService {
 
   /**
    * Direct M-Pesa STK Push
+   * ✅ FIXED: Includes redirect_url
    */
   async mpesaStkPush(paymentData) {
     try {
       if (!this.collection) {
         throw new Error("IntaSend not initialized");
       }
+
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+      const redirectUrl =
+        paymentData.redirectUrl ||
+        `${frontendUrl}/payment-success?order=${paymentData.orderId}&status=success`;
 
       const stkData = {
         first_name: paymentData.firstName || "Customer",
@@ -135,9 +144,14 @@ class IntaSendService {
         amount: paymentData.amount,
         api_ref: paymentData.orderId,
         host: process.env.FRONTEND_URL || "http://localhost:5173",
+        redirect_url: redirectUrl, // ✅ FIXED: Added redirect URL
       };
 
-      logger.info("📤 Sending M-Pesa STK Push");
+      logger.info("📤 Sending M-Pesa STK Push with redirect:", {
+        api_ref: stkData.api_ref,
+        redirect_url: stkData.redirect_url,
+      });
+
       const response = await this.collection.mpesaStkPush(stkData);
 
       return {

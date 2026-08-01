@@ -3,6 +3,7 @@
 const Order = require("../models/Order");
 const Product = require("../models/Product");
 const intaSendService = require("../services/intasendService");
+const { sendOrderConfirmationEmail } = require("../services/emailService");
 const logger = require("../utils/logger");
 const crypto = require("crypto");
 
@@ -71,6 +72,10 @@ const initiatePayment = async (req, res) => {
       });
     }
 
+    // ✅ FIXED: Build the redirect URL for success page
+    const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const successRedirectUrl = `${frontendUrl}/payment-success?order=${order.orderNumber}&status=success`;
+
     let result;
 
     if (paymentMethod === "mpesa") {
@@ -83,6 +88,7 @@ const initiatePayment = async (req, res) => {
         firstName:
           order.user.name || order.user.email?.split("@")[0] || "Customer",
         lastName: "",
+        redirectUrl: successRedirectUrl, // ✅ ADDED: Pass redirect URL
       };
 
       logger.info("📤 Sending M-Pesa STK Push...");
@@ -96,7 +102,7 @@ const initiatePayment = async (req, res) => {
         firstName:
           order.user.name || order.user.email?.split("@")[0] || "Customer",
         lastName: "",
-        redirectUrl: `${process.env.FRONTEND_URL || "http://localhost:5173"}/payment-success?order=${order.orderNumber}`,
+        redirectUrl: successRedirectUrl, // ✅ FIXED: Use the constructed URL
       };
 
       logger.info("📤 Creating IntaSend Checkout Link...");
@@ -131,6 +137,7 @@ const initiatePayment = async (req, res) => {
       orderNumber: order.orderNumber,
       invoiceId: result.invoiceId,
       method: paymentMethod,
+      redirectUrl: successRedirectUrl,
     });
 
     res.json({
@@ -295,6 +302,7 @@ const handleWebhook = async (req, res) => {
  * ✅ COMPLETE FIXED: Process payment webhook data with idempotency
  * Properly detects COMPLETE state and updates order to paid
  * ✅ FIXED: Normalizes "M-PESA" to "MPESA" for enum compatibility
+ * ✅ ADDED: Sends email confirmation on successful payment
  */
 const processPaymentWebhook = async (data) => {
   try {
@@ -324,7 +332,11 @@ const processPaymentWebhook = async (data) => {
       return;
     }
 
-    const order = await Order.findOne({ orderNumber: api_ref });
+    // ✅ Populate user data for email
+    const order = await Order.findOne({ orderNumber: api_ref }).populate(
+      "user",
+      "email name phone",
+    );
 
     if (!order) {
       logger.warn(`❌ Order not found for api_ref: ${api_ref}`);
@@ -389,14 +401,9 @@ const processPaymentWebhook = async (data) => {
       // ✅ Payment successful
       console.log(`✅✅✅ ORDER ${order.orderNumber} IS COMPLETE!`);
 
-      // ✅✅✅ FIXED: Normalize provider value for enum compatibility
-      // IntaSend sends "M-PESA" but our enum expects "MPESA"
+      // ✅ Normalize provider value for enum compatibility
       let normalizedProvider = provider || "INTASEND";
-      if (normalizedProvider === "M-PESA") {
-        normalizedProvider = "MPESA";
-      }
-      // Also handle other variations
-      if (normalizedProvider === "M-Pesa") {
+      if (normalizedProvider === "M-PESA" || normalizedProvider === "M-Pesa") {
         normalizedProvider = "MPESA";
       }
 
@@ -420,6 +427,17 @@ const processPaymentWebhook = async (data) => {
       // ✅ Deduct stock
       await deductStock(order);
       await order.save();
+
+      // ✅✅✅ SEND EMAIL NOTIFICATION
+      try {
+        await sendOrderConfirmationEmail(order);
+        logger.info(
+          `📧 Order confirmation email sent for ${order.orderNumber}`,
+        );
+      } catch (emailError) {
+        logger.error("❌ Failed to send order confirmation email:", emailError);
+        // Don't fail the webhook if email fails
+      }
 
       logger.info(`✅✅✅ Order ${order.orderNumber} PAID! Stock deducted.`);
       logger.info(`📊 Payment details: ${currency} ${value} via ${provider}`);
