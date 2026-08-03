@@ -5,6 +5,8 @@ const Product = require("../models/Product");
 const intaSendService = require("../services/intasendService");
 const logger = require("../utils/logger");
 const crypto = require("crypto");
+// ✅ NEW: Import email service
+const emailService = require("../services/emailService");
 
 /**
  * Initiate payment for an order
@@ -295,6 +297,7 @@ const handleWebhook = async (req, res) => {
  * ✅ COMPLETE FIXED: Process payment webhook data with idempotency
  * Properly detects COMPLETE state and updates order to paid
  * ✅ FIXED: Normalizes "M-PESA" to "MPESA" for enum compatibility
+ * ✅ NEW: Sends payment confirmation email after successful payment
  */
 const processPaymentWebhook = async (data) => {
   try {
@@ -424,6 +427,37 @@ const processPaymentWebhook = async (data) => {
       logger.info(`✅✅✅ Order ${order.orderNumber} PAID! Stock deducted.`);
       logger.info(`📊 Payment details: ${currency} ${value} via ${provider}`);
       logger.info(`📊 Normalized provider: ${normalizedProvider}`);
+
+      // ✅ ✅ ✅ NEW: Send payment confirmation email (non-blocking)
+      try {
+        // Populate user data for email
+        const orderWithUser = await Order.findById(order._id).populate(
+          "user",
+          "email name",
+        );
+        if (orderWithUser?.user?.email) {
+          // Fire and forget - don't await to avoid blocking webhook response
+          emailService
+            .sendPaymentConfirmationEmail(orderWithUser)
+            .catch((err) => {
+              logger.warn(
+                `⚠️ Email send failed for ${order.orderNumber}:`,
+                err.message,
+              );
+            });
+          logger.info(
+            `📧 Payment confirmation email triggered for ${order.orderNumber}`,
+          );
+        } else {
+          logger.warn(`⚠️ No email found for order ${order.orderNumber}`);
+        }
+      } catch (emailError) {
+        logger.error(
+          `❌ Failed to send payment email for ${order.orderNumber}:`,
+          emailError,
+        );
+        // Don't fail the webhook if email fails
+      }
 
       return;
     }
