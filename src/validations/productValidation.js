@@ -32,6 +32,12 @@ const createProductValidation = Joi.object({
   ),
   stock: Joi.number().min(0),
   isFeatured: Joi.boolean(),
+  details: Joi.array().items(
+    Joi.object({
+      title: Joi.string().trim().required().max(100),
+      value: Joi.string().trim().required().max(500),
+    }),
+  ),
 });
 
 // Validation for updating a product
@@ -52,6 +58,12 @@ const updateProductValidation = Joi.object({
   isActive: Joi.boolean(),
   isFeatured: Joi.boolean(),
   removeImages: Joi.array().items(Joi.string()),
+  details: Joi.array().items(
+    Joi.object({
+      title: Joi.string().trim().required().max(100),
+      value: Joi.string().trim().required().max(500),
+    }),
+  ),
 });
 
 // Validate image upload

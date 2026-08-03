@@ -173,8 +173,16 @@ const getProduct = async (req, res) => {
 // Create product with image upload
 const createProduct = async (req, res) => {
   try {
-    const { name, description, price, category, variants, stock, isFeatured } =
-      req.body;
+    const {
+      name,
+      description,
+      price,
+      category,
+      variants,
+      stock,
+      isFeatured,
+      details,
+    } = req.body;
 
     if (!name || !description || !price || !category) {
       if (req.files) {
@@ -236,6 +244,16 @@ const createProduct = async (req, res) => {
             .filter((v) => v.color || v.size)
         : [];
 
+    let parsedDetails = [];
+    if (details) {
+      try {
+        parsedDetails =
+          typeof details === "string" ? JSON.parse(details) : details;
+      } catch (e) {
+        parsedDetails = [];
+      }
+    }
+
     const productData = {
       name,
       slug,
@@ -246,6 +264,7 @@ const createProduct = async (req, res) => {
       variants: cleanedVariants,
       stock: cleanedVariants.length > 0 ? 0 : parseInt(stock) || 0,
       isFeatured: isFeatured === "true" || isFeatured === true || false,
+      details: parsedDetails,
     };
 
     const product = await Product.create(productData);
@@ -291,6 +310,7 @@ const updateProduct = async (req, res) => {
       isActive,
       isFeatured,
       removeImages,
+      details,
     } = req.body;
 
     let imageUrls = product.images || [];
@@ -369,6 +389,16 @@ const updateProduct = async (req, res) => {
       product.isActive = isActive === "true" || isActive === true;
     if (isFeatured !== undefined)
       product.isFeatured = isFeatured === "true" || isFeatured === true;
+
+    if (details !== undefined) {
+      try {
+        const parsedDetails =
+          typeof details === "string" ? JSON.parse(details) : details;
+        product.details = parsedDetails || [];
+      } catch (e) {
+        product.details = [];
+      }
+    }
 
     await product.save();
 

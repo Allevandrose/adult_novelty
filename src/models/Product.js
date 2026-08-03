@@ -74,6 +74,23 @@ const productSchema = new mongoose.Schema(
       default: false,
       index: true, // ✅ Add index for featured queries
     },
+    details: {
+      type: [
+        {
+          title: {
+            type: String,
+            required: true,
+            trim: true,
+          },
+          value: {
+            type: String,
+            required: true,
+            trim: true,
+          },
+        },
+      ],
+      default: [],
+    },
   },
   {
     timestamps: true,
