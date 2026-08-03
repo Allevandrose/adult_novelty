@@ -55,6 +55,7 @@ class IntaSendService {
 
   /**
    * Create payment checkout session
+   * ✅ FIXED: Added host parameter and better logging
    */
   async createCheckout(orderData) {
     try {
@@ -72,18 +73,33 @@ class IntaSendService {
         amount: orderData.amount,
         currency: "KES",
         api_ref: orderData.orderId,
+        host: frontendUrl, // ✅ REQUIRED: Host parameter
         redirect_url:
           orderData.redirectUrl ||
           `${frontendUrl}/payment-success?order=${orderData.orderId}`,
       };
 
+      // ✅ LOG THE FULL REQUEST DATA FOR DEBUGGING
+      console.log(
+        "📤 INTASEND CHARGE REQUEST:",
+        JSON.stringify(chargeData, null, 2),
+      );
+
       logger.info("📤 Creating IntaSend Checkout:", {
         api_ref: chargeData.api_ref,
         amount: chargeData.amount,
         email: chargeData.email,
+        redirect_url: chargeData.redirect_url,
+        host: chargeData.host,
       });
 
       const response = await this.collection.charge(chargeData);
+
+      // ✅ LOG THE FULL RESPONSE
+      console.log(
+        "📥 INTASEND CHARGE RESPONSE:",
+        JSON.stringify(response, null, 2),
+      );
 
       const paymentUrl = response.url;
 
@@ -95,8 +111,17 @@ class IntaSendService {
       const invoiceId =
         response.invoice_id || response.invoice?.id || response.id;
 
+      // ✅ Check if redirect_url is in the response
+      if (response.redirect_url) {
+        console.log(
+          "🔗 IntaSend response redirect_url:",
+          response.redirect_url,
+        );
+      }
+
       logger.info(`✅ Payment URL: ${paymentUrl}`);
       logger.info(`✅ Invoice ID: ${invoiceId}`);
+      logger.info(`✅ Redirect URL sent: ${chargeData.redirect_url}`);
 
       return {
         success: true,
@@ -127,6 +152,8 @@ class IntaSendService {
         throw new Error("IntaSend not initialized");
       }
 
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+
       const stkData = {
         first_name: paymentData.firstName || "Customer",
         last_name: paymentData.lastName || "User",
@@ -134,11 +161,18 @@ class IntaSendService {
         phone_number: paymentData.phoneNumber,
         amount: paymentData.amount,
         api_ref: paymentData.orderId,
-        host: process.env.FRONTEND_URL || "http://localhost:5173",
+        host: frontendUrl, // ✅ REQUIRED: Host parameter
       };
 
-      logger.info("📤 Sending M-Pesa STK Push");
+      logger.info("📤 Sending M-Pesa STK Push:", {
+        api_ref: stkData.api_ref,
+        amount: stkData.amount,
+        phone_number: stkData.phone_number,
+      });
+
       const response = await this.collection.mpesaStkPush(stkData);
+
+      console.log("📥 STK PUSH RESPONSE:", JSON.stringify(response, null, 2));
 
       return {
         success: true,

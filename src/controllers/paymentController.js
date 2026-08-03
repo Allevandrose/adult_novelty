@@ -90,6 +90,13 @@ const initiatePayment = async (req, res) => {
       logger.info("📤 Sending M-Pesa STK Push...");
       result = await intaSendService.mpesaStkPush(stkData);
     } else {
+      // ✅ Build the redirect URL - MAKE SURE THIS IS CORRECT
+      const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+      const redirectUrl = `${frontendUrl}/payment-success?order=${order.orderNumber}`;
+
+      // ✅ LOG THE URL FOR DEBUGGING
+      console.log("🔗 REDIRECT URL BEING SENT:", redirectUrl);
+
       const checkoutData = {
         orderId: order.orderNumber,
         amount: order.totalAmount,
@@ -98,10 +105,12 @@ const initiatePayment = async (req, res) => {
         firstName:
           order.user.name || order.user.email?.split("@")[0] || "Customer",
         lastName: "",
-        redirectUrl: `${process.env.FRONTEND_URL || "http://localhost:5173"}/payment-success?order=${order.orderNumber}`,
+        redirectUrl: redirectUrl,
       };
 
       logger.info("📤 Creating IntaSend Checkout Link...");
+      logger.info("🔗 With redirect URL:", checkoutData.redirectUrl);
+
       result = await intaSendService.createCheckout(checkoutData);
     }
 
@@ -393,12 +402,10 @@ const processPaymentWebhook = async (data) => {
       console.log(`✅✅✅ ORDER ${order.orderNumber} IS COMPLETE!`);
 
       // ✅✅✅ FIXED: Normalize provider value for enum compatibility
-      // IntaSend sends "M-PESA" but our enum expects "MPESA"
       let normalizedProvider = provider || "INTASEND";
       if (normalizedProvider === "M-PESA") {
         normalizedProvider = "MPESA";
       }
-      // Also handle other variations
       if (normalizedProvider === "M-Pesa") {
         normalizedProvider = "MPESA";
       }
@@ -428,9 +435,8 @@ const processPaymentWebhook = async (data) => {
       logger.info(`📊 Payment details: ${currency} ${value} via ${provider}`);
       logger.info(`📊 Normalized provider: ${normalizedProvider}`);
 
-      // ✅ ✅ ✅ NEW: Send payment confirmation email (non-blocking)
+      // ✅ ✅ ✅ Send payment confirmation email (non-blocking)
       try {
-        // Populate user data for email
         const orderWithUser = await Order.findById(order._id).populate(
           "user",
           "email name",
